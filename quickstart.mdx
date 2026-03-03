@@ -1,80 +1,488 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Get from installation to your first strategic briefing in minutes.
 ---
 
-## Get started in three steps
+# Quick start
 
-Get your documentation site running locally and make your first customization.
+This guide gets you from a fresh installation to asking your first strategic question.
 
-### Step 1: Set up your local environment
+<Note>
+Make sure you've completed the [installation guide](/installation) before continuing.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Start the app
+
+The `dev.sh` script starts both the Python backend and Electron app in development mode:
+
+```bash
+./dev.sh
+```
+
+### What happens when you run dev.sh
+
+<Steps>
+  <Step title="Environment check">
+    The script loads `.env` and verifies your `GOOGLE_API_KEY` is set.
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    🚀 Starting Stellaris Companion (dev mode)
+       API Token: dev-token-1234567890...
+       DB Path: ./stellaris_history.db
+    ```
+  </Step>
+  
+  <Step title="Cleanup orphaned processes">
+    Kills any processes still using port 8742 from previous runs.
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```bash
+    🧹 Cleaning up orphaned processes on port 8742...
+    ```
+  </Step>
+  
+  <Step title="Start Python backend">
+    Launches the FastAPI server on port 8742:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    📦 Starting Python backend on :8742...
+    ⏳ Waiting for backend...
+    ✅ Backend ready!
+    ```
+    
+    The backend provides REST endpoints for the Electron renderer:
+    - `/api/health` - Server status and save info
+    - `/api/chat` - Ask questions
+    - `/api/status` - Empire metrics
+    - `/api/sessions` - History sessions
+    - `/api/chronicle` - Generate narrative chronicles
+  </Step>
+  
+  <Step title="Start Electron + React">
+    Launches the desktop app with hot reload:
+    
+    ```bash
+    ⚡ Starting Electron + React...
+    ```
+    
+    The Electron window opens with the Stellaris Companion UI.
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Warning>
+Press `Ctrl+C` to stop both processes. The script includes cleanup handlers to ensure graceful shutdown.
+</Warning>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+### Manual startup (alternative)
 
-### Step 3: Go live
+If you prefer to run components separately:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+<CodeGroup>
+```bash Backend only
+# Activate venv first
+source venv/bin/activate
+
+# Start FastAPI backend
+python3 -m backend.electron_main
+```
+
+```bash Electron only
+cd electron
+STELLARIS_API_TOKEN="your-token" npm run dev
+```
+</CodeGroup>
+
+## Load your first save
+
+<Steps>
+  <Step title="Automatic save detection">
+    When the app starts, it automatically looks for your most recent save in the default location for your platform:
+    
+    - **macOS**: `~/Documents/Paradox Interactive/Stellaris/save games/`
+    - **Linux (Steam)**: `~/.local/share/Paradox Interactive/Stellaris/save games/`
+    - **Linux (Flatpak)**: `~/.var/app/com.valvesoftware.Steam/.local/share/Paradox Interactive/Stellaris/save games/`
+    - **Windows**: `Documents\Paradox Interactive\Stellaris\save games\`
+    
+    <Note>
+    If you use GeForce Now or cloud gaming, download your `.sav` from Steam Remote Storage first.
+    </Note>
+  </Step>
+  
+  <Step title="Manual save selection (optional)">
+    If automatic detection doesn't work:
+    
+    1. Click **Config** in the top nav
+    2. Go to **DATA INGESTION** section
+    3. Click **BROWSE** to select your save folder
+    4. The app will watch this folder for new saves
+  </Step>
+  
+  <Step title="Wait for ingestion">
+    When a save is detected, the app goes through multiple stages:
+    
+    ```text
+    waiting_for_stable_save → parsing_t0 → precomputing_t2 → persisting → ready
+    ```
+    
+    - **parsing_t0**: Quick metadata extraction (empire name, date, version)
+    - **precomputing_t2**: Full extraction and briefing generation (~15-30 seconds)
+    - **persisting**: Save to SQLite history database
+    - **ready**: Briefing ready for chat
+    
+    <Note>
+    The status indicator in the top-right shows current stage. You can chat once it reaches "ready".
+    </Note>
+  </Step>
+</Steps>
+
+## Ask your first question
+
+Once the briefing is ready, the chat interface becomes active.
+
+### Example questions
+
+<Tabs>
+  <Tab title="Strategic overview">
+    ```
+    Give me a strategic briefing
+    ```
+    
+    Gets a comprehensive overview of your empire's current state: military strength, economy, diplomacy, technology, and immediate concerns.
+  </Tab>
+  
+  <Tab title="Military">
+    ```
+    How strong is my military compared to neighbors?
+    ```
+    
+    Analyzes fleet power, army strength, and compares against known empires. Identifies threats and opportunities.
+  </Tab>
+  
+  <Tab title="Economy">
+    ```
+    What is hurting my economy?
+    ```
+    
+    Reviews resource income/expenses, identifies bottlenecks, and suggests improvements.
+  </Tab>
+  
+  <Tab title="Diplomacy">
+    ```
+    Who should I be worried about right now?
+    ```
+    
+    Examines diplomatic relationships, active wars, rivalries, and potential threats.
+  </Tab>
+  
+  <Tab title="Technology">
+    ```
+    Which tech path gives me the biggest edge next?
+    ```
+    
+    Analyzes your tech situation and suggests research priorities based on your empire's strategy.
+  </Tab>
+</Tabs>
+
+### How chat works
+
+The companion uses a **precomputed briefing** for fast responses:
+
+```python
+# From backend/core/companion.py
+def ask_precomputed(
+    self,
+    question: str,
+    session_key: str = "default",
+    save_id: str | None = None,
+) -> tuple[str, float]:
+    """Ask a question using the precomputed briefing.
+    
+    Returns (response_text, elapsed_time_seconds)
+    """
+```
+
+The briefing includes:
+- **Empire identity**: Ethics, civics, government, origin
+- **Military**: Fleet power, armies, starbases, ships
+- **Economy**: Resource income/expenses, stockpiles, economic power
+- **Diplomacy**: Contacts, wars, alloys, rivalries
+- **Planets**: Colonies, population, districts, buildings
+- **Leaders**: Ruler, governors, scientists, admirals, generals
+- **Technology**: Current tech, research speed
+
+<Note>
+No tool-calling loop means responses are fast (typically 1-3 seconds). The LLM has everything it needs in context.
+</Note>
+
+## Understand the response
+
+Responses adapt to your empire's personality. The advisor tone matches your ethics, government, and civics.
+
+### Example response format
+
+```
+Commander, your strategic position as of 2250.01.01:
+
+MILITARY: Fleet power at 2,450. You outmatch the neighboring Xenophobe Concordat 
+(1,800) but fall short of the Fallen Empire to the south (45,000). Recommend 
+focusing alloy production for fleet expansion before mid-game crises.
+
+ECONOMY: Energy deficit of -12/month is concerning. Your ecumenopolis is consuming 
+more than mining stations provide. Consider building more Dyson Sphere segments or 
+downgrading some city districts until energy stabilizes.
+
+DIPLOMACY: Defensive pact with the Egalitarian Union provides security on your 
+western border. Watch the Devouring Swarm - they're at Overwhelming fleet power 
+and have a rivalry with you.
+
+RECOMMENDATION: Prioritize energy credits this decade. Delay the habitat construction 
+until income is positive.
+```
+
+Key features:
+- **Exact numbers from your save** (no guessing or estimation)
+- **Strategic interpretation** (not just reporting facts)
+- **Actionable advice** (specific recommendations)
+- **Empire-appropriate tone** (adapts to your ethics/government)
+
+### Conversation history
+
+The companion maintains conversation context per session:
+
+```python
+# From backend/core/conversation.py
+class ConversationManager:
+    """Manages multi-turn conversations with context."""
+    
+    def add_message(self, role: str, content: str):
+        """Add a message to the conversation history."""
+    
+    def get_history(self) -> list[dict]:
+        """Get the full conversation history."""
+```
+
+You can ask follow-up questions like:
+
+```
+You: Give me a strategic briefing
+Advisor: [Full briefing]
+
+You: What about that Devouring Swarm you mentioned?
+Advisor: [Detailed analysis of the specific threat]
+```
+
+## Explore history and chronicles
+
+Stellaris Companion tracks changes across your campaign.
+
+### View session history
+
+1. Click **History** in the top nav
+2. See all your playthroughs with empire names and date ranges
+3. Click a session to view snapshots and events
+
+### Generate a chronicle
+
+<Steps>
+  <Step title="Select a session">
+    Go to **History** and choose a completed playthrough.
+  </Step>
+  
+  <Step title="Click Generate Chronicle">
+    The app creates a dramatic, multi-chapter narrative from your campaign events.
+  </Step>
+  
+  <Step title="Read your story">
+    Chronicles are cached and regenerated when significant new events occur.
+    
+    Example chapter:
+    
+    ```markdown
+    ## Chapter 1: The First Contact War (2205-2215)
+    
+    The Commonwealth of Sol had barely mastered FTL travel when they 
+    encountered the Xenophobe Concordat. What began as a border dispute 
+    over the resource-rich Deneb system escalated into a decade-long 
+    conflict that would define the early empire...
+    ```
+  </Step>
+</Steps>
+
+<Note>
+Chronicle generation uses the same Gemini API and can take 30-60 seconds for long campaigns.
+</Note>
+
+## Optional: Set up Discord integration
+
+Ask questions without alt-tabbing from Stellaris.
+
+<Steps>
+  <Step title="Connect Discord">
+    1. Open the Electron app and go to **Config**
+    2. Click **CONNECT DISCORD** and authorize in your browser
+    3. Click **INVITE BOT** to add `/ask` to your server (first time only)
+  </Step>
+  
+  <Step title="Test in Discord">
+    Open Discord overlay in-game and run:
+    
+    ```
+    /ask Should I attack the fallen empire?
+    ```
+    
+    The bot responds with strategic analysis from your current save.
+  </Step>
+</Steps>
+
+<Warning>
+The Electron app must be running for Discord commands to work. The relay forwards requests to your local backend.
+</Warning>
+
+For relay self-hosting and maintainer setup, see `cloudflare/README.md` in the source repo.
+
+## Understanding the architecture
+
+Stellaris Companion uses a three-process architecture:
+
+```text
+┌─────────────────┐
+│  Electron Main  │  ← Node.js (Electron)
+│   (IPC Router)  │
+└────────┬────────┘
+         │
+         ├─────────────────┐
+         │                 │
+┌────────▼────────┐ ┌─────▼──────────┐
+│ Python Backend  │ │ Electron       │
+│   (FastAPI)     │ │ Renderer       │
+│                 │ │   (React)      │
+│ • SaveExtractor │ │                │
+│ • Companion     │ │ • Chat UI      │
+│ • History DB    │ │ • Config       │
+│ • Chronicle     │ │ • History      │
+└────────┬────────┘ └────────────────┘
+         │
+         │ subprocess call
+         │
+┌────────▼────────┐
+│  Rust Parser    │  ← Rust binary
+│   (stellaris-   │
+│    parser)      │
+└─────────────────┘
+```
+
+### Component responsibilities
+
+<Tabs>
+  <Tab title="Electron Main">
+    - Routes IPC messages between renderer and Python backend
+    - Manages window lifecycle
+    - Handles native OS integrations
+  </Tab>
+  
+  <Tab title="Python Backend">
+    ```python
+    # backend/api/server.py
+    app = create_app()
+    app.state.companion = Companion(save_path=...)
+    app.state.db = GameDatabase()
+    ```
+    
+    - FastAPI server on port 8742
+    - Save file extraction via `SaveExtractor`
+    - LLM calls via `Companion` class
+    - History tracking in SQLite
+    - Chronicle generation
+  </Tab>
+  
+  <Tab title="Electron Renderer">
+    - React 18 + TypeScript
+    - Chat interface with real-time updates
+    - Configuration UI
+    - History browser
+    - Chronicle viewer
+  </Tab>
+  
+  <Tab title="Rust Parser">
+    ```bash
+    stellaris-parser extract-save save.sav \
+      --sections meta,galaxy,country \
+      --output -
+    ```
+    
+    - Built on [jomini](https://crates.io/crates/jomini)
+    - Parses Clausewitz format (Stellaris save files)
+    - 10-50x faster than regex parsing
+    - Used via Python subprocess bridge
+  </Tab>
+</Tabs>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Customize advisor" icon="wand-magic-sparkles">
+    Set custom instructions in **Config** → **ADVISOR** to adjust personality.
+  </Card>
+  
+  <Card title="Review architecture docs" icon="file-code">
+    See `docs/architecture.md` in the source repo for technical details.
+  </Card>
+  
+  <Card title="Contribute" icon="code-pull-request">
+    See `CONTRIBUTING.md` for DLC coverage, cross-platform reliability, and bug fixes.
+  </Card>
+  
+  <Card title="Report issues" icon="bug">
+    Use the in-app **Report Issue** button or GitHub Issues.
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<Accordion title="Briefing not ready / stuck on parsing">
+  Check the backend logs for errors:
+  
+  ```bash
+  # If using dev.sh, backend logs appear in the same terminal
+  # Look for errors from stellaris-parser or SaveExtractor
+  ```
+  
+  Common causes:
+  - Corrupted save file (try loading in-game first)
+  - Rust parser binary not found (check installation)
+  - Out of memory (large saves need 4GB+ RAM)
+</Accordion>
+
+<Accordion title="Chat gives generic/wrong answers">
+  The briefing might be stale. Force a refresh:
+  
+  1. Load a fresh save (play and save in-game)
+  2. Wait for "ready" status
+  3. Ask your question again
+  
+  If answers still seem wrong, check the diagnostics:
+  
+  ```bash
+  curl -H "Authorization: Bearer $STELLARIS_API_TOKEN" \
+    http://127.0.0.1:8742/api/diagnostics
+  ```
+</Accordion>
+
+<Accordion title="Discord commands not working">
+  Verify the relay connection:
+  
+  1. Electron app must be running
+  2. Check **Config** → **DISCORD** shows "Connected"
+  3. Test in a server where the bot is invited
+  4. Check Discord overlay is enabled in Discord settings
+  
+  The relay forwards `/ask` requests to your local backend at `http://127.0.0.1:8742`.
+</Accordion>
+
+<Accordion title="High memory usage">
+  Stellaris saves can be large (100MB+ for late-game). The parser and extractor load the full save into memory.
+  
+  Tips to reduce memory:
+  - Close other memory-intensive apps
+  - Reduce "Keep full briefings" setting in Config
+  - Use session mode for batch queries (see Rust bridge docs)
+</Accordion>

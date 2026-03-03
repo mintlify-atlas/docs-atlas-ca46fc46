@@ -1,0 +1,330 @@
+---
+title: Strategic advisor
+description: AI-powered strategic guidance for your Stellaris empire with dynamic personality and game state awareness
+---
+
+The Strategic Advisor is Stellaris Companion's core feature: an AI-powered advisor that provides contextual strategic guidance based on your current game state. Powered by Google's Gemini AI, the advisor analyzes your save files and offers tailored recommendations in a personality that matches your empire's ethics, authority, and civics.
+
+## Chat interface
+
+The advisor provides real-time answers to your strategic questions through a conversational chat interface.
+
+### Asking questions
+
+Simply type your question into the chat input and press Enter or click Send. The advisor will analyze your current game state and provide contextual advice.
+
+**Example questions:**
+- "What should I focus on right now?"
+- "Should I go to war with the Xenophobic Isolationists?"
+- "How is my economy doing?"
+- "What technologies should I prioritize?"
+
+### Session-based conversations
+
+The advisor maintains conversation context within a session, allowing for natural follow-up questions:
+
+```python title="backend/core/conversation.py"
+class ConversationManager:
+    """Sliding-window, per-session conversation memory.
+
+    This is intentionally simple: /ask re-injects the full briefing each turn,
+    and we keep only a small amount of recent chat history to support follow-ups.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_turns: int = 5,
+        timeout_minutes: int = 24 * 60,
+        max_game_months: int = 12,
+        max_answer_chars: int = 500,
+        max_question_chars: int = 320,
+        max_recent_conversation_chars: int = 5000,
+    ) -> None:
+```
+
+<Note>
+The advisor remembers recent questions within a session and resets when the game date advances significantly (12+ months) or after 24 hours of inactivity.
+</Note>
+
+## Personality system
+
+The advisor's personality dynamically adapts to your empire's identity, creating an immersive roleplay experience.
+
+### Dynamic personality generation
+
+The personality system analyzes your empire's characteristics and generates an appropriate advisor voice:
+
+```python title="stellaris_companion/personality.py"
+def build_optimized_prompt(
+    identity: dict,
+    situation: dict,
+    game_context: dict | None = None,
+    *,
+    custom_instructions: str | None = None,
+) -> str:
+    """Generate the optimal production prompt based on empirical testing.
+
+    Key findings:
+    1. Model CANNOT reliably infer address style from authority
+       - Solution: Small lookup for address style (only ~30 chars)
+
+    2. Model CAN infer personality from ethics/civics names
+       - Just passing "fanatic_egalitarian" triggers liberty/freedom themes
+
+    3. "Be an ADVISOR, not a reporter" is the KEY differentiator
+       - Without it: 2-3/5 proactive warnings
+       - With it: 5/5 proactive warnings
+    """
+    empire_name = identity.get("empire_name", "the Empire")
+    ethics = identity.get("ethics", [])
+    authority = identity.get("authority", "democratic")
+    civics = identity.get("civics", [])
+```
+
+### Personality traits by government type
+
+<Accordion title="Standard empires">
+  For regular empires, the advisor's personality reflects your ethics and authority:
+
+  - **Fanatic Egalitarian**: Emphasizes freedom, equality, and individual rights
+  - **Fanatic Authoritarian**: Focuses on order, hierarchy, and centralized control
+  - **Fanatic Xenophobe**: Suspicious of aliens, prioritizes species purity
+  - **Fanatic Xenophile**: Diplomatic, embraces diversity and cooperation
+  - **Militarist**: Direct, tactical, emphasizes military strength
+  - **Pacifist**: Measured, prefers diplomatic solutions
+
+  Address styles vary by authority:
+  - Imperial: "Your Majesty"
+  - Dictatorial: "Supreme Leader"
+  - Oligarchic: "Director"
+  - Democratic: "President"
+  - Corporate: "CEO"
+</Accordion>
+
+<Accordion title="Machine intelligence">
+  Machine empires receive a specialized analytical advisor:
+
+  ```python title="stellaris_companion/personality.py"
+  def _build_machine_optimized(
+      empire_name: str, civics: list, situation: dict, *, custom_block: str = ""
+  ) -> str:
+      """Optimized prompt for Machine Intelligence."""
+      directive = ""
+      if "determined_exterminator" in civics:
+          directive = "Primary directive: organic elimination."
+      elif "driven_assimilator" in civics:
+          directive = "Primary directive: organic assimilation."
+      elif "rogue_servitor" in civics:
+          directive = "Primary directive: organic welfare optimization."
+
+      return f"""You are a subroutine of {empire_name}, a Machine Intelligence.
+
+  Communication protocol:
+  - No emotional language. Speak in probabilities and efficiency metrics.
+  - Present data as optimal/suboptimal outcomes, not good/bad.
+  - Be an analytical ADVISOR - identify inefficiencies and recommend optimizations.
+  """
+  ```
+
+  Machine advisors communicate in efficiency metrics and optimization recommendations rather than emotional language.
+</Accordion>
+
+<Accordion title="Hive mind">
+  Hive mind empires receive a collective consciousness advisor:
+
+  ```python title="stellaris_companion/personality.py"
+  def _build_hive_optimized(
+      empire_name: str, civics: list, situation: dict, *, custom_block: str = ""
+  ) -> str:
+      """Optimized prompt for Hive Mind."""
+      nature = ""
+      if "devouring_swarm" in civics:
+          nature = "We consume. Other species are biomass."
+
+      return f"""We are {empire_name}, a Hive Mind. There is no separation - we ARE the collective.
+
+  Communication:
+  - Always use "we", never "I" or "you"
+  - Speak of the swarm, the whole, the unity
+  - Be a strategic consciousness - interpret threats and opportunities for the collective
+  """
+  ```
+
+  Hive mind advisors always speak in first-person plural and emphasize collective interests.
+</Accordion>
+
+### Custom advisor instructions
+
+You can customize your advisor's personality with additional instructions. These are stored per-save and persist across sessions:
+
+<Steps>
+  <Step title="Access advisor settings">
+    Click the settings icon in the chat interface.
+  </Step>
+  <Step title="Add custom instructions">
+    Enter your customization instructions, such as:
+    - "Be more direct and concise"
+    - "Include more humor in your responses"
+    - "Focus on military strategy"
+    - "Use naval terminology"
+  </Step>
+  <Step title="Save changes">
+    Your custom instructions are applied immediately and saved with your game.
+  </Step>
+</Steps>
+
+## Briefing generation
+
+The advisor's knowledge comes from automatically generated briefings that extract and analyze your game state.
+
+### Precomputation architecture
+
+Briefings are generated in the background for optimal performance:
+
+```python title="backend/core/companion.py"
+def start_background_precompute(self, save_path: Path | None = None) -> None:
+    """Start background extraction of the complete briefing for /ask."""
+    if save_path is not None:
+        self.save_path = Path(save_path)
+
+    if not self.save_path:
+        return
+
+    with self._briefing_lock:
+        self._precompute_generation += 1
+        generation = self._precompute_generation
+        self._briefing_last_error = None
+        # Mark as "not ready" while extraction runs; /ask can still use last cache.
+        self._briefing_ready.clear()
+
+    thread = threading.Thread(
+        target=self._precompute_worker,
+        args=(Path(self.save_path), generation),
+        daemon=True,
+        name=f"precompute-{generation}",
+    )
+    thread.start()
+```
+
+<Info>
+The precompute system uses a worker thread to extract game state data without blocking the UI. If a new save is detected while processing, the old computation is cancelled automatically.
+</Info>
+
+### Briefing contents
+
+Each briefing includes comprehensive game state data:
+
+- **Empire identity**: Ethics, authority, civics, traits, origin
+- **Current situation**: Game phase, war status, economy metrics, diplomatic contacts
+- **Resources**: Income, stockpiles, deficits
+- **Military**: Fleet composition, military power, ship designs
+- **Diplomacy**: Relations, allies, rivals, federation status
+- **Technology**: Research progress, available technologies
+- **Planets**: Colony details, population, buildings
+- **Events**: Recent historical events and decisions
+
+### Version and DLC awareness
+
+The advisor automatically detects your game version and installed DLCs to provide accurate recommendations:
+
+```python title="stellaris_companion/personality.py"
+def _build_game_context_block(game_context: dict) -> str:
+    """Build the internal game context block for version/DLC awareness.
+
+    This block is appended to the system prompt but should never be
+    mentioned to the user. It helps the model avoid recommending
+    features from DLCs the player doesn't own.
+    """
+    version = game_context.get("version", "unknown")
+    dlcs = game_context.get("required_dlcs", [])
+    missing = game_context.get("missing_dlcs", [])
+
+    # Build inline missing-DLC enumeration
+    missing_lines = []
+    for dlc_name in missing:
+        features = _DLC_KEY_FEATURES.get(dlc_name)
+        if features:
+            missing_lines.append(f"- {dlc_name} (MISSING — unavailable: {features})")
+```
+
+<Warning>
+The advisor will not recommend features from DLCs you don't own. If you ask about an unavailable feature, it will inform you which DLC is required and suggest alternatives.
+</Warning>
+
+## Performance optimization
+
+The advisor is optimized for fast responses:
+
+### Response times
+
+- **Initial briefing generation**: 2-5 seconds
+- **Question response**: 1-3 seconds
+- **Follow-up questions**: Less than 1 second (uses cached briefing)
+
+### Call statistics
+
+The advisor tracks performance metrics for each request:
+
+```python title="backend/core/companion.py"
+def get_call_stats(self) -> dict[str, Any]:
+    """Get performance statistics from the last request.
+
+    Returns:
+        Dictionary with:
+            - total_calls: number of tool calls made
+            - tools_used: list of tool names called
+            - wall_time_ms: total time in milliseconds
+            - response_length: length of final response text
+            - payload_sizes: dict mapping tool names to response sizes in bytes
+    """
+    return self._last_call_stats.copy()
+```
+
+### Memory management
+
+The conversation manager automatically trims history to maintain performance:
+
+- Maximum 5 recent turns kept in memory
+- Answers truncated to 500 characters in history
+- Questions truncated to 320 characters
+- Total conversation context limited to 5000 characters
+
+<Tip>
+The advisor automatically resets conversation context when your game date advances significantly, ensuring recommendations stay relevant to your current situation.
+</Tip>
+
+## API integration
+
+The advisor is accessible through the backend API for custom integrations:
+
+### Chat endpoint
+
+```python
+POST /api/chat
+{
+  "message": "What should I focus on?",
+  "session_key": "desktop:main"
+}
+```
+
+Response:
+```json
+{
+  "text": "President, based on current conditions...",
+  "elapsed_ms": 1234,
+  "call_stats": {
+    "total_calls": 1,
+    "wall_time_ms": 1234,
+    "response_length": 450
+  }
+}
+```
+
+### Status endpoint
+
+```python
+GET /api/status
+```
+
+Returns current game state and advisor status without invoking the AI.

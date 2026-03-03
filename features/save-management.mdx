@@ -1,0 +1,470 @@
+---
+title: Save management
+description: Automatic save detection, loading, and history tracking for seamless gameplay integration
+---
+
+Stellaris Companion automatically monitors your Stellaris save directory, loading new saves as they're created and maintaining a complete history of your campaigns.
+
+## Save auto-detection
+
+The app watches your Stellaris save directory for new `.sav` files and loads them automatically.
+
+### Platform-specific paths
+
+Stellaris Companion knows where to look for saves on each platform:
+
+```python title="stellaris_companion/save_loader.py"
+def get_platform_save_paths() -> list[Path]:
+    """Get Stellaris save directories for the current platform.
+    
+    Returns:
+        List of paths to check, in order of preference
+    """
+    system = platform.system()
+    
+    if system == "Windows":
+        return [
+            Path.home() / "Documents" / "Paradox Interactive" / "Stellaris" / "save games",
+        ]
+    elif system == "Darwin":  # macOS
+        return [
+            Path.home() / "Documents" / "Paradox Interactive" / "Stellaris" / "save games",
+        ]
+    elif system == "Linux":
+        return [
+            Path.home() / ".local" / "share" / "Paradox Interactive" / "Stellaris" / "save games",
+        ]
+    else:
+        return []
+```
+
+### File watching
+
+The save watcher uses the `watchdog` library to monitor filesystem events:
+
+```python title="backend/core/save_watcher.py"
+class SaveFileHandler(FileSystemEventHandler):
+    """Handler for save file system events."""
+
+    def __init__(
+        self,
+        on_save_detected: Callable[[Path], None] | None = None,
+        on_save_detected_async: Callable[[Path], Awaitable[None]] | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+        debounce_seconds: float = 2.0,
+    ):
+        super().__init__()
+        self.on_save_detected = on_save_detected
+        self.on_save_detected_async = on_save_detected_async
+        self.loop = loop
+        self.debounce_seconds = debounce_seconds
+        self._last_event: dict[str, float] = {}
+```
+
+<Note>
+The watcher includes a 2-second debounce to prevent duplicate processing when games create temporary files or write saves in multiple steps.
+</Note>
+
+### Event handling
+
+When a new save is detected, the watcher triggers callbacks:
+
+```python title="backend/core/save_watcher.py"
+def _handle_save_event(self, path: Path) -> None:
+    """Handle a detected save file event."""
+    if not self._should_process(path):
+        return
+
+    logger.info(f"Save file detected: {path.name}")
+
+    # Call sync callback if provided
+    if self.on_save_detected:
+        try:
+            self.on_save_detected(path)
+        except Exception as e:
+            logger.error(f"Error in sync callback: {e}")
+
+    # Call async callback if provided
+    if self.on_save_detected_async and self.loop:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.on_save_detected_async(path), self.loop
+            )
+        except Exception as e:
+            logger.error(f"Error scheduling async callback: {e}")
+```
+
+## Save loading process
+
+When a save is detected, Stellaris Companion processes it through multiple stages.
+
+### Ingestion stages
+
+The ingestion manager coordinates save processing:
+
+```python title="backend/core/ingestion.py"
+IngestionStage = Literal[
+    "idle",
+    "waiting_for_stable_save",
+    "parsing_t0",
+    "precomputing_t2",
+    "persisting",
+    "ready",
+    "error",
+]
+```
+
+<Steps>
+  <Step title="Waiting for stable save">
+    The system waits for the save file to stop changing. Stellaris sometimes writes saves in multiple chunks, so we verify the file is complete:
+
+    ```python title="backend/core/ingestion.py"
+    def _wait_for_stable_save(self, save_path: Path, request_id: int) -> bool:
+        """Wait until save file is stable and readable as a zip/meta."""
+        stable_for = 0.0
+        last_mtime = None
+        last_size = None
+        started = time.time()
+
+        while time.time() - started < self._stable_max_wait_seconds:
+            # Check if file size and modification time are unchanged
+            if stat.st_mtime == last_mtime and stat.st_size == last_size:
+                stable_for += 0.2
+            else:
+                stable_for = 0.0
+                last_mtime = stat.st_mtime
+                last_size = stat.st_size
+
+            if stable_for >= self._stable_window_seconds:
+                try:
+                    self._read_meta_only(save_path)
+                    return True
+                except (zipfile.BadZipFile, KeyError):
+                    stable_for = 0.0
+    ```
+  </Step>
+  <Step title="Tier 0: Quick metadata">
+    Extract basic metadata from the save's `meta` file without parsing the full gamestate:
+
+    ```python title="backend/core/ingestion.py"
+    def _read_meta_only(self, save_path: Path) -> dict[str, Any]:
+        with zipfile.ZipFile(save_path, "r") as z:
+            meta_text = z.read("meta").decode("utf-8", errors="replace")
+        parsed: dict[str, Any] = {
+            "file_path": str(save_path),
+            "file_size_mb": save_path.stat().st_size / (1024 * 1024),
+        }
+        for line in meta_text.split("\n"):
+            if "=" in line and "flag" not in line.lower():
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"')
+                if key in {"version", "name", "date"}:
+                    parsed[key] = value
+        return parsed
+    ```
+
+    This provides immediate feedback (empire name, date) without the 2-5 second full parse.
+  </Step>
+  <Step title="Tier 2: Full briefing">
+    Extract the complete game state in a background worker process:
+
+    ```python title="backend/core/ingestion.py"
+    # Run in worker process to avoid blocking
+    briefing = extractor.get_complete_briefing()
+    ```
+
+    This includes all resources, fleets, planets, diplomacy, and more.
+  </Step>
+  <Step title="Persist to history">
+    Save the snapshot and events to SQLite for chronicle generation and history tracking:
+
+    ```python title="backend/core/history.py"
+    def record_snapshot_from_briefing(
+        db: GameDatabase,
+        save_path: Path,
+        save_hash: str,
+        gamestate: dict | None,
+        player_id: int | None,
+        briefing: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record a snapshot and extract events."""
+    ```
+  </Step>
+  <Step title="Ready">
+    The save is fully loaded and the advisor is ready to answer questions.
+  </Step>
+</Steps>
+
+### Cancellation and latest-only
+
+If a new save is detected during processing, the old job is cancelled:
+
+```python title="backend/core/ingestion.py"
+def notify_save(self, save_path: Path) -> None:
+    path = Path(save_path)
+    with self._lock:
+        self._request_id += 1
+        self._last_save_event_at = time.time()
+        self._status.pending_save_path = str(path)
+        self._status.pending_requested_at = self._last_save_event_at
+        self._status.stage = "waiting_for_stable_save"
+        self._status.last_error = None
+        self._status.t2_ready = False
+        self._cancel_active_worker_locked()
+        self._wakeup.set()
+```
+
+<Info>
+This "latest-only" strategy ensures the app always processes your most recent save, even if you create saves faster than they can be processed.
+</Info>
+
+## History tracking
+
+Stellaris Companion maintains a complete history of your campaigns in SQLite.
+
+### Campaign and session identity
+
+Each playthrough is tracked with a unique `save_id`:
+
+```python title="backend/core/history.py"
+def compute_save_id(
+    *,
+    campaign_id: str | None,
+    player_id: int | None,
+    empire_name: str | None,
+    save_path: Path | None,
+) -> str:
+    """Compute a stable save_id for this empire/campaign.
+    
+    Args:
+        campaign_id: Derived from galaxy root (stable across playthrough)
+        player_id: Player empire ID (stable within campaign)
+        empire_name: Empire name (for display/disambiguation)
+        save_path: Path to save file (for filename-based fallback)
+    """
+    if campaign_id and player_id is not None:
+        return f"campaign_{campaign_id}_player_{player_id}"
+    
+    # Fallback for early/ironman saves
+    if empire_name and save_path:
+        filename = save_path.stem
+        clean_name = empire_name.lower().replace(" ", "_")
+        return f"empire_{clean_name}_{filename}"
+```
+
+<Note>
+The `save_id` is stable across multiple session files for the same playthrough, ensuring chronicles and history persist even when you reload from an earlier save.
+</Note>
+
+### Snapshot storage
+
+Each time a save is processed, a snapshot is recorded:
+
+```python title="backend/core/database.py"
+def insert_snapshot(
+    self,
+    session_id: str,
+    game_date: str,
+    save_hash: str,
+    full_briefing_json: str | None = None,
+) -> int:
+    """Insert a new snapshot.
+    
+    Returns:
+        snapshot_id
+    """
+    cursor = self.conn.execute(
+        """
+        INSERT INTO snapshots (session_id, game_date, save_hash, full_briefing_json)
+        VALUES (?, ?, ?, ?)
+        """,
+        (session_id, game_date, save_hash, full_briefing_json),
+    )
+    return cursor.lastrowid
+```
+
+### Event extraction
+
+The system extracts notable events from each save:
+
+```python title="backend/core/events.py"
+class EventExtractor:
+    """Extract historical events from Stellaris gamestate."""
+
+    def extract_events(
+        self, gamestate: dict, prev_gamestate: dict | None = None
+    ) -> list[Event]:
+        """Extract events by comparing current state with previous.
+        
+        Returns:
+            List of Event objects sorted by date
+        """
+```
+
+**Event types extracted:**
+- War declarations and conclusions
+- First contacts with new empires
+- Federation formation and dissolution
+- Ruler changes
+- Colony establishment
+- Ascension perk selection
+- Crisis events
+- Technology milestones
+- And more...
+
+### Deduplication
+
+Events are deduplicated across snapshots:
+
+```python title="backend/core/database.py"
+def insert_events_deduplicated(
+    self,
+    session_id: int | str,
+    snapshot_id: int,
+    events: list[Event],
+) -> tuple[int, int]:
+    """Insert events with deduplication.
+    
+    Returns:
+        (inserted_count, skipped_duplicate_count)
+    """
+    inserted = 0
+    skipped = 0
+    
+    for event in events:
+        # Check if event already exists
+        cursor = self.conn.execute(
+            """
+            SELECT id FROM events
+            WHERE session_id = ? AND game_date = ?
+              AND event_type = ? AND summary = ?
+            """,
+            (session_id, event.game_date, event.event_type, event.summary),
+        )
+        if cursor.fetchone():
+            skipped += 1
+        else:
+            self.insert_event(session_id, snapshot_id, event)
+            inserted += 1
+    
+    return inserted, skipped
+```
+
+<Info>
+Deduplication ensures that reloading earlier saves doesn't create duplicate event entries in your history.
+</Info>
+
+## Save memory optimization
+
+To keep database size manageable, full briefings are pruned:
+
+```python title="backend/core/database.py"
+DEFAULT_KEEP_FULL_BRIEFINGS_RECENT = 5
+
+def prune_old_full_briefings(self, session_id: str | int) -> int:
+    """Remove full_briefing_json from old snapshots.
+    
+    Keeps the N most recent snapshots and the very first snapshot.
+    
+    Returns:
+        Number of briefings pruned
+    """
+```
+
+<Accordion title="Why prune briefings?">
+  Full briefings can be 500KB+ each. For a long campaign with hundreds of snapshots, this would grow to hundreds of megabytes.
+  
+  The pruning strategy:
+  - **Keep first snapshot**: Captures your empire's starting conditions
+  - **Keep 5 most recent**: Enables recent history comparisons and reloads
+  - **Prune middle snapshots**: Removes briefing JSON but keeps metadata and events
+  
+  This reduces storage by 90%+ while preserving chronicle generation and history browsing.
+</Accordion>
+
+## Manual save loading
+
+You can manually load saves instead of relying on auto-detection:
+
+<Steps>
+  <Step title="Open file picker">
+    Click "Load Save" in the menu or press the keyboard shortcut.
+  </Step>
+  <Step title="Select save file">
+    Navigate to any `.sav` file on your system.
+  </Step>
+  <Step title="Wait for processing">
+    The save goes through the same ingestion pipeline as auto-detected saves.
+  </Step>
+</Steps>
+
+<Tip>
+Manual loading is useful for analyzing saves from different computers or cloud storage locations outside your default save directory.
+</Tip>
+
+## Reload on save changes
+
+When you reload a save in Stellaris, the app automatically detects the change:
+
+```python title="backend/core/companion.py"
+def check_save_changed(self) -> bool:
+    """Check if the save file has been modified.
+    
+    Returns:
+        True if save file changed, False otherwise
+    """
+    if not self.save_path:
+        return False
+    current_mtime = self.save_path.stat().st_mtime
+    return current_mtime != self.last_modified
+
+def reload_save(self, new_path: Path | None = None) -> bool:
+    """Reload the save file and rebuild personality.
+    
+    Args:
+        new_path: Optional new path to switch to
+    
+    Returns:
+        True if identity changed, False otherwise
+    """
+```
+
+<Warning>
+If you reload to an earlier save (time travel), the advisor's conversation context resets automatically to prevent confusion from outdated context.
+</Warning>
+
+## Status monitoring
+
+The ingestion status is available through the API:
+
+```python
+GET /api/ingestion/status
+```
+
+Returns:
+```json
+{
+  "stage": "ready",
+  "stage_detail": "Full briefing ready",
+  "save_loaded": true,
+  "current_save_path": "/path/to/save.sav",
+  "t0_meta": {
+    "name": "United Nations of Earth",
+    "date": "2250.03.15",
+    "version": "4.2.4"
+  },
+  "t2_ready": true,
+  "t2_game_date": "2250.03.15",
+  "t2_updated_at": 1234567890.0,
+  "t2_last_duration_ms": 2345.67,
+  "db": {
+    "session_count": 5,
+    "snapshot_count": 127,
+    "event_count": 543,
+    "chronicle_count": 3
+  }
+}
+```
+
+This allows UI components to show progress indicators and error states during save loading.

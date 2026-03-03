@@ -1,0 +1,418 @@
+---
+title: Python Integration
+description: How to integrate the Rust parser with Python using rust_bridge.py
+---
+
+The `rust_bridge.py` module provides Python bindings to the `stellaris-parser` Rust binary, handling subprocess communication, JSON parsing, and error handling.
+
+## Overview
+
+The bridge offers two modes:
+1. **Direct mode**: Spawn a subprocess for each operation (simple, but slower)
+2. **Session mode**: Keep a persistent subprocess with parsed save in memory (recommended for multiple queries)
+
+## Installation & Setup
+
+The bridge automatically locates the parser binary in the following order:
+
+1. `PARSER_BINARY` environment variable (for testing/override)
+2. Electron packaged app: `rust-parser/` folder in resources
+3. Development: `stellaris-parser/target/release/stellaris-parser`
+4. Package: `bin/` directory relative to the bridge file
+
+## Basic Usage
+
+### Extract Sections
+
+Extract specific sections from a save file:
+
+```python
+from stellaris_companion.rust_bridge import extract_sections
+
+data = extract_sections("save.sav", ["meta", "galaxy"])
+print(data["meta"]["date"])  # "2431.02.18"
+```
+
+### Iterate Section Entries
+
+Stream entries from large sections without loading everything into memory:
+
+```python
+from stellaris_companion.rust_bridge import iter_section_entries
+
+for key, country in iter_section_entries("save.sav", "country"):
+    print(f"Country {key}: {country.get('name', 'Unknown')}")
+```
+
+## Session Mode (Recommended)
+
+For better performance when making multiple queries, use session mode:
+
+```python
+from stellaris_companion.rust_bridge import session
+
+with session("save.sav") as sess:
+    # Parse once, query multiple times
+    meta = sess.extract_sections(["meta"])
+    player = sess.extract_sections(["player"])
+    
+    # Get specific entry
+    player_country = sess.get_entry("country", "0")
+    
+    # Iterate countries
+    for key, country in sess.iter_section("country"):
+        print(country["name"])
+```
+
+### Context Manager Benefits
+
+- **No re-parsing**: Save is parsed once and kept in memory
+- **Faster queries**: No subprocess spawning overhead
+- **Automatic cleanup**: Session is closed when context exits
+
+## Session API
+
+### extract_sections(sections)
+
+Extract specific sections from the parsed save.
+
+```python
+data = sess.extract_sections(["meta", "player"])
+print(data["meta"]["date"])
+```
+
+<ParamField path="sections" type="list[str]" required>
+  List of section names to extract (e.g., `["meta", "galaxy", "player"]`)
+</ParamField>
+
+**Returns**: Dict with section names as keys, parsed content as values.
+
+### iter_section(section, batch_size=100)
+
+Stream entries from a section. Yields `(key, value)` tuples.
+
+```python
+for key, country in sess.iter_section("country"):
+    if country.get("type") == "default":
+        print(f"Empire: {country['name']}")
+```
+
+<ParamField path="section" type="str" required>
+  Section name (e.g., `"country"`, `"fleet"`, `"ships"`)
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="100">
+  Number of entries per batch. Higher values reduce IPC overhead but use more memory.
+</ParamField>
+
+### get_entry(section, key)
+
+Fetch a single entry by section and key ID. More efficient than iterating when you know the exact entry.
+
+```python
+player_country = sess.get_entry("country", "0")
+if player_country:
+    print(player_country["name"])
+```
+
+<ParamField path="section" type="str" required>
+  Section name
+</ParamField>
+
+<ParamField path="key" type="str" required>
+  Entry ID/key (e.g., `"0"` for player country)
+</ParamField>
+
+**Returns**: Entry dict if found, `None` if not found.
+
+### get_entries(section, keys, fields=None)
+
+Batch fetch multiple entries with optional field projection.
+
+```python
+# Get full entries
+entries = sess.get_entries("fleet", ["100", "101", "102"])
+for entry in entries:
+    print(entry["_key"], entry["_value"]["name"])
+
+# Get only specific fields
+entries = sess.get_entries("country", ["0", "1"], fields=["name", "type"])
+for entry in entries:
+    print(entry["_key"], entry["name"], entry["type"])
+```
+
+<ParamField path="section" type="str" required>
+  Section name
+</ParamField>
+
+<ParamField path="keys" type="list[str]" required>
+  List of entry IDs/keys to fetch
+</ParamField>
+
+<ParamField path="fields" type="list[str] | None" default="None">
+  Optional list of field names to extract (projection). If `None`, returns full entries.
+</ParamField>
+
+**Returns**: List of entry dicts. With projection: `{"_key": "id", "field1": value, ...}`. Without: `{"_key": "id", "_value": {...}}`.
+
+### count_keys(keys)
+
+Count occurrences of specific keys throughout the parsed save.
+
+```python
+result = sess.count_keys(["prethoryn_system", "contingency_system"])
+print(result["counts"]["prethoryn_system"])  # 5
+```
+
+<ParamField path="keys" type="list[str]" required>
+  List of key names to count
+</ParamField>
+
+**Returns**: Dict with `"counts"` key containing a mapping of key → count.
+
+### contains_tokens(tokens)
+
+Check if specific tokens appear anywhere in the raw gamestate bytes using Aho-Corasick algorithm.
+
+```python
+result = sess.contains_tokens(["killed_dragon", "ether_drake_killed"])
+if result["matches"]["killed_dragon"]:
+    print("Player killed the Ether Drake!")
+```
+
+<ParamField path="tokens" type="list[str]" required>
+  List of tokens to search for
+</ParamField>
+
+**Returns**: Dict with `"matches"` key containing a mapping of token → bool.
+
+### contains_kv(pairs)
+
+Check if specific key=value pairs exist anywhere in the parsed gamestate.
+
+```python
+result = sess.contains_kv([("war_in_heaven", "yes"), ("version", "3")])
+if result["matches"]["war_in_heaven=yes"]:
+    print("War in Heaven has started!")
+```
+
+<ParamField path="pairs" type="list[tuple[str, str]]" required>
+  List of (key, value) tuples to search for
+</ParamField>
+
+**Returns**: Dict with `"matches"` key containing a mapping of "key=value" → bool.
+
+### get_country_summaries(fields)
+
+Get lightweight country projections with only the requested fields.
+
+```python
+result = sess.get_country_summaries(["name", "type", "flag"])
+for country in result["countries"]:
+    print(f"{country['id']}: {country['name']} ({country['type']})")
+```
+
+<ParamField path="fields" type="list[str]" required>
+  List of field names to extract from each country
+</ParamField>
+
+**Returns**: Dict with `"countries"` key containing a list of country objects with `"id"` plus requested fields.
+
+### get_duplicate_values(section, key, field)
+
+Extract all values for a field that has duplicate keys in Clausewitz format (e.g., multiple `traits="x"` entries for a leader).
+
+```python
+traits = sess.get_duplicate_values("leaders", "12345", "traits")
+print(traits)  # ["leader_trait_resilient", "leader_trait_carefree", ...]
+```
+
+<ParamField path="section" type="str" required>
+  Section name (e.g., `"leaders"`, `"species_db"`)
+</ParamField>
+
+<ParamField path="key" type="str" required>
+  Entry ID/key within the section
+</ParamField>
+
+<ParamField path="field" type="str" required>
+  Field name that has duplicate values
+</ParamField>
+
+**Returns**: List of all values for that field. Empty list if entry not found.
+
+### get_entry_text(section, key)
+
+Get raw Clausewitz text for a single entry. Useful for parsing duplicate keys with regex.
+
+```python
+text = sess.get_entry_text("country", "0")
+if text:
+    # Parse with regex for duplicate relation={} blocks
+    relations = re.findall(r'relation=\{[^}]+\}', text)
+```
+
+<ParamField path="section" type="str" required>
+  Section name
+</ParamField>
+
+<ParamField path="key" type="str" required>
+  Entry ID/key within the section
+</ParamField>
+
+**Returns**: Raw Clausewitz text for the entry, or `None` if not found.
+
+### batch_ops(ops)
+
+Execute multiple operations in a single request to reduce IPC overhead.
+
+```python
+results = sess.batch_ops([
+    {"op": "get_entry", "section": "country", "key": "0"},
+    {"op": "get_entry", "section": "country", "key": "1"},
+    {"op": "count_keys", "keys": ["name", "type"]}
+])
+
+country_0 = results[0]["entry"]
+country_1 = results[1]["entry"]
+name_count = results[2]["counts"]["name"]
+```
+
+<ParamField path="ops" type="list[dict]" required>
+  List of operation dicts, each with an `"op"` key and operation-specific parameters.
+  
+  Supported operations:
+  - `extract_sections`
+  - `get_entry`
+  - `get_entries`
+  - `count_keys`
+  - `contains_tokens`
+  - `contains_kv`
+  - `get_country_summaries`
+  - `get_duplicate_values`
+  - `get_entry_text`
+</ParamField>
+
+**Returns**: List of result dicts, one per operation in the same order as input.
+
+<Note>
+`iter_section` and `close` are NOT supported in batch mode.
+</Note>
+
+## Error Handling
+
+The bridge raises `ParserError` for all parser-related errors:
+
+```python
+from stellaris_companion.rust_bridge import extract_sections, ParserError
+
+try:
+    data = extract_sections("save.sav", ["meta"])
+except ParserError as e:
+    print(f"Error: {e}")
+    print(f"Exit code: {e.exit_code}")
+    if e.line:
+        print(f"Line: {e.line}, Col: {e.col}")
+except FileNotFoundError as e:
+    print(f"File not found: {e}")
+```
+
+### Error Attributes
+
+<ParamField path="message" type="str">
+  Human-readable error description
+</ParamField>
+
+<ParamField path="line" type="int | None">
+  Line number where error occurred (if available)
+</ParamField>
+
+<ParamField path="col" type="int | None">
+  Column number where error occurred (if available)
+</ParamField>
+
+<ParamField path="exit_code" type="int | None">
+  Process exit code: `1` = file not found, `2` = parse error, `3` = invalid arguments
+</ParamField>
+
+## Performance Optimization
+
+### Use Session Mode
+
+Always use session mode for multiple queries:
+
+```python
+# ❌ Slow: re-parses for each call
+data1 = extract_sections("save.sav", ["meta"])
+data2 = extract_sections("save.sav", ["player"])
+
+# ✅ Fast: parse once, query multiple times
+with session("save.sav") as sess:
+    data1 = sess.extract_sections(["meta"])
+    data2 = sess.extract_sections(["player"])
+```
+
+### Batch Operations
+
+Use `batch_ops()` to reduce IPC round-trip latency:
+
+```python
+# ❌ Slower: multiple round trips
+country_0 = sess.get_entry("country", "0")
+country_1 = sess.get_entry("country", "1")
+country_2 = sess.get_entry("country", "2")
+
+# ✅ Faster: single round trip
+results = sess.batch_ops([
+    {"op": "get_entry", "section": "country", "key": "0"},
+    {"op": "get_entry", "section": "country", "key": "1"},
+    {"op": "get_entry", "section": "country", "key": "2"}
+])
+```
+
+### Use Field Projection
+
+When you only need specific fields, use projection to reduce memory usage:
+
+```python
+# ❌ Loads full country data (large)
+entries = sess.get_entries("country", ["0", "1", "2"])
+
+# ✅ Loads only requested fields
+entries = sess.get_entries("country", ["0", "1", "2"], fields=["name", "type"])
+```
+
+### Adjust Batch Size
+
+For `iter_section()`, tune `batch_size` based on your needs:
+
+```python
+# Small entries (e.g., systems): larger batch size
+for key, system in sess.iter_section("galactic_object", batch_size=500):
+    pass
+
+# Large entries (e.g., countries): smaller batch size
+for key, country in sess.iter_section("country", batch_size=50):
+    pass
+```
+
+## Platform Support
+
+The bridge supports:
+- **Windows** (x64)
+- **macOS** (x64 and ARM64)
+- **Linux** (x64)
+
+<Warning>
+Linux ARM64 is not currently supported by bundled parser binaries. Build and provide a custom parser via `PARSER_BINARY` environment variable to run on this architecture.
+</Warning>
+
+## JSON Performance
+
+The bridge uses `orjson` when available for ~80% faster JSON parsing compared to stdlib `json`. Install it for better performance:
+
+```bash
+pip install orjson
+```
+
+The bridge automatically falls back to stdlib `json` if `orjson` is not installed.

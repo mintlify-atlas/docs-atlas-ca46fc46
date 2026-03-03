@@ -1,0 +1,512 @@
+---
+title: "Database Module"
+description: "SQLite database for game history and session tracking"
+---
+
+# Database Module
+
+The `backend.core.database` module provides persistent storage for game history, snapshots, events, and chronicles.
+
+## GameDatabase
+
+SQLite wrapper for game history storage.
+
+```python
+from backend.core.database import GameDatabase
+
+db = GameDatabase("stellaris_history.db")
+```
+
+### Constructor
+
+<ParamField path="db_path" type="str | Path | None">
+  Path to SQLite database file. If None, uses `STELLARIS_DB_PATH` environment variable or defaults to `stellaris_history.db`.
+</ParamField>
+
+### Schema
+
+The database uses the following main tables:
+
+- **sessions** - Play sessions for an empire/save
+- **snapshots** - Save file snapshots (one per autosave)
+- **events** - Derived events from snapshot deltas
+- **cached_chronicles** - Generated chronicle narratives
+- **advisor_memory** - Per-save advisor memory summaries
+
+## Session Management
+
+### create_session
+
+Create a new play session.
+
+```python
+session_id = db.create_session(
+    save_id="commonwealth-2350",
+    save_path="/path/to/save.sav",
+    empire_name="United Nations of Earth",
+    last_game_date="2350.01.01"
+)
+```
+
+<ParamField path="save_id" type="str" required>
+  Unique identifier for this save/campaign
+</ParamField>
+
+<ParamField path="save_path" type="str | None">
+  Path to save file
+</ParamField>
+
+<ParamField path="empire_name" type="str | None">
+  Player empire name
+</ParamField>
+
+<ParamField path="last_game_date" type="str | None">
+  Game date (e.g., "2350.01.01")
+</ParamField>
+
+<ResponseField name="session_id" type="str">
+  Generated UUID hex string for the session
+</ResponseField>
+
+### get_active_session_id
+
+Get the active session for a save.
+
+```python
+session_id = db.get_active_session_id(save_id="commonwealth-2350")
+if session_id:
+    print(f"Active session: {session_id}")
+```
+
+<ParamField path="save_id" type="str" required>
+  Save identifier
+</ParamField>
+
+<ResponseField name="session_id" type="str | None">
+  Active session ID, or None if no active session
+</ResponseField>
+
+### get_or_create_active_session
+
+Get or create an active session.
+
+```python
+session_id = db.get_or_create_active_session(
+    save_id="commonwealth-2350",
+    empire_name="United Nations of Earth"
+)
+```
+
+### end_session
+
+Mark a session as ended.
+
+```python
+db.end_session(session_id="abc123", ended_at=1234567890)
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="ended_at" type="int | None">
+  Unix timestamp (defaults to now)
+</ParamField>
+
+### get_sessions
+
+Get all sessions with statistics.
+
+```python
+sessions = db.get_sessions(limit=50)
+for session in sessions:
+    print(f"{session['empire_name']}: {session['snapshot_count']} snapshots")
+```
+
+<ParamField path="limit" type="int" default="50">
+  Maximum number of sessions to return
+</ParamField>
+
+<ResponseField name="sessions" type="list[dict]">
+  List of session records with snapshot counts and date ranges
+</ResponseField>
+
+## Snapshot Management
+
+### insert_snapshot
+
+Insert a new save file snapshot.
+
+```python
+snapshot_id = db.insert_snapshot(
+    session_id="abc123",
+    game_date="2350.01.01",
+    save_hash="sha256hash",
+    military_power=50000,
+    colony_count=15,
+    wars_count=1,
+    energy_net=450.5,
+    alloys_net=125.0,
+    full_briefing_json=json.dumps(briefing),
+    event_state_json=json.dumps(event_state)
+)
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="game_date" type="str | None">
+  Game date (e.g., "2350.01.01")
+</ParamField>
+
+<ParamField path="save_hash" type="str | None">
+  Hash of save file for deduplication
+</ParamField>
+
+<ParamField path="military_power" type="int | None">
+  Total military power
+</ParamField>
+
+<ParamField path="colony_count" type="int | None">
+  Number of colonies
+</ParamField>
+
+<ParamField path="wars_count" type="int | None">
+  Number of active wars
+</ParamField>
+
+<ParamField path="energy_net" type="float | None">
+  Net energy production
+</ParamField>
+
+<ParamField path="alloys_net" type="float | None">
+  Net alloy production
+</ParamField>
+
+<ParamField path="full_briefing_json" type="str | None">
+  Complete briefing JSON (stored selectively)
+</ParamField>
+
+<ParamField path="event_state_json" type="str | None">
+  Compact event state for delta computation
+</ParamField>
+
+<ResponseField name="snapshot_id" type="int">
+  Auto-generated snapshot ID
+</ResponseField>
+
+### insert_snapshot_if_new
+
+Insert snapshot only if it's new (deduplication).
+
+```python
+is_new, snapshot_id = db.insert_snapshot_if_new(
+    session_id="abc123",
+    save_hash="sha256hash",
+    # ... other parameters
+)
+```
+
+<ResponseField name="is_new" type="bool">
+  True if snapshot was inserted, False if duplicate
+</ResponseField>
+
+<ResponseField name="snapshot_id" type="int | None">
+  New snapshot ID, or None if duplicate
+</ResponseField>
+
+### get_snapshot_range_for_save
+
+Get snapshot date range for a save.
+
+```python
+range_info = db.get_snapshot_range_for_save(save_id="commonwealth-2350")
+print(f"First: {range_info['first_game_date']}")
+print(f"Last: {range_info['last_game_date']}")
+print(f"Count: {range_info['snapshot_count']}")
+```
+
+## Event Management
+
+### insert_events
+
+Insert multiple events.
+
+```python
+events = [
+    {
+        "event_type": "war_started",
+        "summary": "War declared on Xenophobic Isolationists",
+        "data": {"enemy_id": 5, "war_name": "Liberation War"}
+    },
+    {
+        "event_type": "colony_founded",
+        "summary": "New colony on Alpha Prime",
+        "data": {"planet_id": 42}
+    }
+]
+
+count = db.insert_events(
+    session_id="abc123",
+    captured_at=1234567890,
+    game_date="2350.01.01",
+    events=events
+)
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="captured_at" type="int | None">
+  Unix timestamp
+</ParamField>
+
+<ParamField path="game_date" type="str | None">
+  Game date
+</ParamField>
+
+<ParamField path="events" type="list[dict]" required>
+  List of event dictionaries with event_type, summary, and data fields
+</ParamField>
+
+<ResponseField name="count" type="int">
+  Number of events inserted
+</ResponseField>
+
+### get_all_events
+
+Get all events for a session.
+
+```python
+events = db.get_all_events(session_id="abc123")
+for event in events:
+    print(f"{event['game_date']}: {event['summary']}")
+```
+
+### get_all_events_by_save_id
+
+Get all events across all sessions for a save.
+
+```python
+events = db.get_all_events_by_save_id(save_id="commonwealth-2350")
+```
+
+### get_events_in_snapshot_range
+
+Get events within a specific snapshot range.
+
+```python
+events = db.get_events_in_snapshot_range(
+    save_id="commonwealth-2350",
+    from_snapshot_id=100,
+    to_snapshot_id=200
+)
+```
+
+## Chronicle Management
+
+### upsert_cached_chronicle
+
+Store or update a generated chronicle.
+
+```python
+db.upsert_cached_chronicle(
+    session_id="abc123",
+    chronicle_text="# Chapter 1: The Awakening\n...",
+    chapters_json=json.dumps(chapters_data),
+    event_count=150,
+    snapshot_count=50,
+    save_id="commonwealth-2350"
+)
+```
+
+### get_cached_chronicle
+
+Get cached chronicle for a session.
+
+```python
+chronicle = db.get_cached_chronicle(session_id="abc123")
+if chronicle:
+    print(chronicle['chronicle_text'])
+```
+
+### get_chronicle_by_save_id
+
+Get chronicle by save ID (cross-session).
+
+```python
+chronicle = db.get_chronicle_by_save_id(save_id="commonwealth-2350")
+```
+
+### update_chronicle_custom_instructions
+
+Set custom instructions for chronicle generation.
+
+```python
+db.update_chronicle_custom_instructions(
+    save_id="commonwealth-2350",
+    text="Write in a formal, historical tone. Focus on diplomatic events."
+)
+```
+
+## Advisor Memory
+
+### upsert_advisor_memory_summary
+
+Store compact advisor memory for a save.
+
+```python
+db.upsert_advisor_memory_summary(
+    save_id="commonwealth-2350",
+    summary_text="Previous advice: Focus on alloy production...",
+    last_game_date="2350.01.01"
+)
+```
+
+<ParamField path="save_id" type="str" required>
+  Save identifier
+</ParamField>
+
+<ParamField path="summary_text" type="str | None">
+  Memory summary text
+</ParamField>
+
+<ParamField path="last_game_date" type="str | None">
+  Last game date
+</ParamField>
+
+### get_advisor_memory_summary
+
+Retrieve advisor memory for a save.
+
+```python
+memory = db.get_advisor_memory_summary(save_id="commonwealth-2350")
+if memory:
+    print(f"Previous context: {memory}")
+```
+
+## Briefing Storage
+
+### update_session_latest_briefing
+
+Store the latest full briefing for a session.
+
+```python
+db.update_session_latest_briefing(
+    session_id="abc123",
+    latest_briefing_json=json.dumps(briefing),
+    last_game_date="2350.01.01"
+)
+```
+
+### get_latest_session_briefing_json
+
+Get the latest briefing for a session.
+
+```python
+briefing_json = db.get_latest_session_briefing_json(session_id="abc123")
+if briefing_json:
+    briefing = json.loads(briefing_json)
+```
+
+## Maintenance
+
+### enforce_full_briefing_retention
+
+Clean up old full briefing JSON to save space.
+
+```python
+cleared = db.enforce_full_briefing_retention(
+    session_id="abc123",
+    keep_recent=0,
+    keep_first=True
+)
+print(f"Cleared {cleared} snapshots")
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="keep_recent" type="int" default="0">
+  Number of recent snapshots to keep full briefings for
+</ParamField>
+
+<ParamField path="keep_first" type="bool" default="True">
+  Keep first snapshot as baseline
+</ParamField>
+
+### maybe_checkpoint_wal
+
+Checkpoint and truncate WAL if large.
+
+```python
+checkpointed = db.maybe_checkpoint_wal(threshold_bytes=64*1024*1024)
+if checkpointed:
+    print("WAL checkpointed")
+```
+
+### get_db_stats
+
+Get database file size statistics.
+
+```python
+stats = db.get_db_stats()
+print(f"Database size: {stats['bytes'] / 1024 / 1024:.1f} MB")
+print(f"Path: {stats['path']}")
+```
+
+## Example: Complete Workflow
+
+```python
+from backend.core.database import GameDatabase
+from stellaris_save_extractor import SaveExtractor
+import json
+
+# Initialize database
+db = GameDatabase("stellaris_history.db")
+
+# Create or get session
+save_id = "commonwealth-2350"
+session_id = db.get_or_create_active_session(
+    save_id=save_id,
+    empire_name="United Nations of Earth",
+    save_path="/path/to/save.sav"
+)
+
+# Extract save data
+with SaveExtractor("/path/to/save.sav") as extractor:
+    briefing = extractor.get_complete_briefing()
+    
+    # Insert snapshot
+    is_new, snapshot_id = db.insert_snapshot_if_new(
+        session_id=session_id,
+        game_date=briefing['meta']['date'],
+        save_hash="hash123",
+        military_power=briefing['military']['total_power'],
+        colony_count=briefing['situation']['colony_count'],
+        wars_count=len(briefing['diplomacy']['wars']),
+        energy_net=briefing['economy']['resources_net'].get('energy', 0),
+        alloys_net=briefing['economy']['resources_net'].get('alloys', 0),
+        full_briefing_json=None,  # Managed by retention policy
+        event_state_json=json.dumps(briefing)
+    )
+    
+    if is_new:
+        print(f"New snapshot {snapshot_id} recorded")
+        
+        # Compute and store events
+        from backend.core.events import compute_events
+        # ... event computation logic
+
+# Query history
+sessions = db.get_sessions(limit=10)
+for session in sessions:
+    print(f"{session['empire_name']}: {session['first_game_date']} - {session['last_game_date']}")
+
+# Clean up
+db.enforce_full_briefing_retention_all_sessions(keep_recent=0, keep_first=True)
+db.maybe_checkpoint_wal()
+```

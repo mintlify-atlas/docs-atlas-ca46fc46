@@ -1,0 +1,196 @@
+---
+title: CLI Reference
+description: Command-line interface reference for the stellaris-parser Rust binary
+---
+
+The `stellaris-parser` Rust binary provides a fast Clausewitz format parser for Stellaris save files. It can be used standalone via CLI or integrated with Python through the bridge.
+
+## Installation
+
+The parser binary is distributed as platform-specific executables:
+- **Windows**: `stellaris-parser.exe`
+- **macOS (ARM64)**: `stellaris-parser-darwin-arm64`
+- **macOS (x64)**: `stellaris-parser-darwin-x64`
+- **Linux (x64)**: `stellaris-parser-linux-x64`
+
+## Available Commands
+
+### extract-save
+
+Extract specific sections as JSON from a `.sav` file.
+
+```bash
+stellaris-parser extract-save <PATH> --sections <SECTIONS> [OPTIONS]
+```
+
+<ParamField path="PATH" type="string" required>
+  Path to the `.sav` file (ZIP archive containing gamestate and meta)
+</ParamField>
+
+<ParamField path="--sections" type="string" required>
+  Comma-separated list of section names to extract (e.g., `meta,galaxy,player`)
+</ParamField>
+
+<ParamField path="--schema-version" type="string" default="1">
+  Schema version for JSON contract. Currently only version `1` is supported.
+</ParamField>
+
+<ParamField path="--output" type="string" default="-">
+  Output file path. Use `-` for stdout (default).
+</ParamField>
+
+#### Example
+
+```bash
+# Extract meta and galaxy sections to stdout
+stellaris-parser extract-save save.sav --sections meta,galaxy
+
+# Extract to a file
+stellaris-parser extract-save save.sav --sections meta,player --output output.json
+```
+
+#### Output Format
+
+```json
+{
+  "schema_version": 1,
+  "tool_version": "0.4.0",
+  "game": "stellaris",
+  "meta": {
+    "date": "2431.02.18",
+    "name": "United Nations of Earth"
+  },
+  "galaxy": {
+    "star": {...}
+  }
+}
+```
+
+### iter-save
+
+Iterate entries in a section with streaming JSONL output. This is ideal for large sections that don't fit in memory.
+
+```bash
+stellaris-parser iter-save <PATH> --section <SECTION> [OPTIONS]
+```
+
+<ParamField path="PATH" type="string" required>
+  Path to the `.sav` file
+</ParamField>
+
+<ParamField path="--section" type="string" required>
+  Section name to iterate (e.g., `country`, `fleet`, `ships`)
+</ParamField>
+
+<ParamField path="--schema-version" type="string" default="1">
+  Schema version for JSON contract
+</ParamField>
+
+<ParamField path="--format" type="string" default="jsonl">
+  Output format. Currently only `jsonl` is supported.
+</ParamField>
+
+#### Example
+
+```bash
+# Stream all countries as JSONL
+stellaris-parser iter-save save.sav --section country
+
+# Process ships section
+stellaris-parser iter-save save.sav --section ships
+```
+
+#### Output Format
+
+The first line includes full metadata:
+
+```json
+{"schema_version":1,"tool_version":"0.4.0","game":"stellaris","section":"country","key":"0","value":{...}}
+```
+
+Subsequent lines contain only key-value pairs:
+
+```json
+{"key":"1","value":{"name":"Blorg Commonality","type":"default"}}
+{"key":"2","value":{"name":"Ketling Star Pack","type":"default"}}
+```
+
+### serve
+
+Start a persistent session server that parses the save file once and responds to multiple queries via stdin/stdout. This eliminates re-parsing overhead.
+
+```bash
+stellaris-parser serve --path <PATH>
+```
+
+<ParamField path="--path" type="string" required>
+  Path to the `.sav` file to load
+</ParamField>
+
+#### Usage
+
+The serve command accepts JSON requests on stdin and returns JSON responses on stdout:
+
+```bash
+stellaris-parser serve --path save.sav
+```
+
+Send requests as JSON lines:
+
+```json
+{"op":"extract_sections","sections":["meta","player"]}
+{"op":"get_entry","section":"country","key":"0"}
+{"op":"close"}
+```
+
+<Note>
+The serve command is primarily used by the Python bridge (`rust_bridge.py`). Most users should use the Python API rather than calling serve directly.
+</Note>
+
+### extract-gamestate (Debug)
+
+Extract sections from an already-extracted gamestate file. This is for debugging only.
+
+```bash
+stellaris-parser extract-gamestate <PATH> --sections <SECTIONS> [OPTIONS]
+```
+
+Parameters are the same as `extract-save`, but `<PATH>` points to a raw gamestate file instead of a `.sav` archive.
+
+## Exit Codes
+
+The parser uses specific exit codes for different error types:
+
+- **0**: Success
+- **1**: File not found (save file or parser binary missing)
+- **2**: Parse error (corrupted save, invalid Clausewitz format)
+- **3**: Invalid arguments (unsupported schema version, missing required flags)
+
+## Performance
+
+The Rust parser is optimized for speed:
+- **Parsing**: Handles 80MB+ save files in 2-3 seconds
+- **Windows-1252 encoding**: Native support for Stellaris save encoding
+- **Streaming**: `iter-save` processes large sections without loading everything into memory
+- **Session mode**: `serve` parses once and handles multiple queries with minimal latency
+
+## Technical Details
+
+### Save File Format
+
+Stellaris save files (`.sav`) are ZIP archives containing:
+- `gamestate`: Main save data in Clausewitz format (Windows-1252 encoded)
+- `meta`: Metadata about the save (date, empire name, version, etc.)
+
+### Encoding
+
+The parser uses Windows-1252 encoding for compatibility with Stellaris saves. UTF-8 decoding will fail on saves with non-ASCII characters.
+
+### Dependencies
+
+Built with:
+- `jomini` (0.28): Clausewitz format parser
+- `clap` (4.x): Command-line argument parsing
+- `serde_json`: JSON serialization
+- `zip` (2.2): ZIP archive handling
+- `aho-corasick` (1.1): Fast multi-pattern string matching

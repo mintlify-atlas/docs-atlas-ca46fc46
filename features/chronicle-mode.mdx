@@ -1,0 +1,336 @@
+---
+title: Chronicle mode
+description: AI-generated narrative chronicles that transform your Stellaris playthrough into an epic story
+---
+
+Chronicle Mode transforms your Stellaris gameplay into an epic narrative. The AI analyzes your game events and generates dramatic, chapter-based chronicles in the voice of your empire's royal chronicler.
+
+## How chronicles work
+
+Chronicles are generated incrementally as your game progresses, creating a permanent narrative record of your empire's history.
+
+### Incremental chapter system
+
+Chronicles use a two-part structure:
+
+1. **Finalized chapters**: Permanent historical records covering past eras (typically 50 years each)
+2. **Current era**: A dynamic teaser showing recent events that haven't been finalized into a chapter yet
+
+```python title="backend/core/chronicle.py"
+class ChronicleGenerator:
+    """Generate LLM-powered chronicles for empire sessions.
+
+    Supports incremental chapters keyed by save_id for cross-session continuity.
+    """
+
+    def generate_chronicle(
+        self,
+        session_id: str,
+        *,
+        force_refresh: bool = False,
+        chapter_only: bool = False,
+    ) -> dict[str, Any]:
+        """Generate an incremental chronicle for the session.
+
+        Returns structured response with chapters and current era.
+        Maintains backward compatibility with legacy 'chronicle' string field.
+        """
+```
+
+### Chapter triggers
+
+New chapters are automatically finalized when certain conditions are met:
+
+**Time-based triggers:**
+- First chapter: 5 years of gameplay with sufficient events
+- Subsequent chapters: 50 years since last chapter
+
+**Event-based triggers:**
+```python title="backend/core/chronicle.py"
+# Era-ending event types that trigger chapter finalization
+ERA_ENDING_EVENTS = {
+    "war_ended",
+    "crisis_defeated",
+    "fallen_empire_awakened",
+    "war_in_heaven_started",
+    "federation_joined",
+    "federation_left",
+}
+```
+
+<Info>
+Chapters wait 3 years after an era-ending event before finalizing, ensuring the aftermath is included in the narrative.
+</Info>
+
+## Narrative generation
+
+Chronicles are generated using AI to create dramatic, thematic narratives.
+
+### Chronicle voice
+
+The chronicler's voice adapts to your empire type:
+
+```python title="backend/core/chronicle.py"
+def _get_voice_for_ethics(self, identity: dict, ethics: str) -> str:
+    """Determine the chronicler's narrative voice based on empire ethics."""
+    empire_name = identity.get("empire_name", "Unknown Empire")
+    ethics = ", ".join(identity.get("ethics", []))
+    voice = self._get_voice_for_ethics(identity, ethics)
+```
+
+<Accordion title="Standard empire chronicler">
+  For regular empires, the chronicler speaks as a royal historian:
+
+  - Dramatic, thematic narrative style
+  - References to rulers, councils, and imperial decrees
+  - Emphasis on glory, honor, and destiny
+  - Third-person perspective
+</Accordion>
+
+<Accordion title="Machine empire chronicler">
+  Machine empires receive efficiency-focused chronicling:
+
+  - Clinical, precise language
+  - Emphasis on calculations and optimizations
+  - References to subroutines and protocols
+  - Data-driven perspective on events
+</Accordion>
+
+<Accordion title="Hive mind chronicler">
+  Hive minds get collective consciousness chronicling:
+
+  - First-person plural ("we", "us")
+  - Emphasis on unity and the whole
+  - References to the swarm and collective will
+  - No individual character focus
+</Accordion>
+
+### Chapter structure
+
+Each chapter follows a structured format using Pydantic models:
+
+```python title="backend/core/chronicle.py"
+class NarrativeSection(BaseModel):
+    """A single narrative block within a chapter."""
+
+    type: Literal["prose", "quote", "declaration"]
+    text: str
+    attribution: str = ""
+
+
+class ChapterOutput(BaseModel):
+    """Structured output schema for chapter generation."""
+
+    title: str = Field(
+        description="A dramatic, thematic name for this chapter/era"
+    )
+    epigraph: str = Field(
+        description="A short opening flavor line (max 20 words)"
+    )
+    sections: list[NarrativeSection] = Field(
+        description="3-6 narrative blocks: 'prose' for paragraphs, 'quote' for in-universe quotes, 'declaration' for proclamations"
+    )
+    summary: str = Field(
+        description="2-3 sentences summarizing key events for context in future chapters."
+    )
+```
+
+**Section types:**
+- **Prose**: Standard dramatic paragraphs (most common)
+- **Quote**: In-universe quotes from rulers, diplomats, or intercepted transmissions
+- **Declaration**: Short, punchy proclamations (used sparingly)
+
+### Event selection
+
+Not all events are included in chronicles. The system prioritizes notable events:
+
+```python title="backend/core/chronicle.py"
+NOTABLE_EVENT_TYPES = {
+    # War and diplomacy
+    "war_started",
+    "war_ended",
+    "federation_joined",
+    "federation_left",
+    # Crisis and endgame
+    "crisis_started",
+    "crisis_defeated",
+    "fallen_empire_awakened",
+    "war_in_heaven_started",
+    # Major milestones
+    "ascension_perk_selected",
+    "lgate_opened",
+    "crisis_level_increased",
+    "ruler_changed",
+    "first_contact",
+    "great_khan_spawned",
+    # And more...
+}
+```
+
+<Note>
+When event lists exceed 250 events per chapter, the system automatically filters to notable events and recent activity to maintain narrative focus.
+</Note>
+
+## Current era generation
+
+The "current era" provides a dynamic teaser of ongoing events between finalized chapters.
+
+### Current era updates
+
+Current era narratives are cached and regenerated only when necessary:
+
+```python title="backend/core/chronicle.py"
+used_cached_current_era = False
+current_era: dict[str, Any] | None = None
+current_era_cache = chapters_data.get("current_era_cache")
+
+cached_current_era = (
+    current_era_cache.get("current_era")
+    if isinstance(current_era_cache, dict)
+    and isinstance(current_era_cache.get("current_era"), dict)
+    else None
+)
+cache_matches_era = bool(
+    isinstance(current_era_cache, dict)
+    and current_era_cache.get("start_snapshot_id") == era_start_snapshot_id
+    and cached_current_era is not None
+)
+```
+
+<Info>
+Current era narratives are 1-2 paragraphs and always end with "The story continues..." to indicate this is an unfolding present.
+</Info>
+
+### Generation priority
+
+Chronicle generation prioritizes chapter finalization over current era updates:
+
+- **Pending chapters**: System focuses on finalizing historical chapters first
+- **Current era**: Only regenerated when no chapters are pending and era boundary changes
+- **Background updates**: Chapter-only updates run automatically every 5 minutes when idle
+
+## Chapter regeneration
+
+You can regenerate individual chapters with optional custom guidance:
+
+```python title="backend/core/chronicle.py"
+def regenerate_chapter(
+    self,
+    session_id: str,
+    chapter_number: int,
+    *,
+    confirm: bool = False,
+    regeneration_instructions: str | None = None,
+) -> dict[str, Any]:
+    """Regenerate a specific finalized chapter.
+
+    Returns error if confirm=False (requires explicit confirmation).
+    Marks downstream chapters as context_stale.
+    """
+```
+
+<Steps>
+  <Step title="Request regeneration">
+    Click the regenerate button on a chapter in the chronicle viewer.
+  </Step>
+  <Step title="Confirm action">
+    Confirm that you want to regenerate the chapter. This action will mark all subsequent chapters as "context stale."
+  </Step>
+  <Step title="Add instructions (optional)">
+    Provide specific guidance for the regeneration, such as:
+    - "Focus more on the economic aspects"
+    - "Include more details about the war"
+    - "Make it more dramatic"
+  </Step>
+  <Step title="Wait for generation">
+    The new chapter will be generated and automatically saved.
+  </Step>
+</Steps>
+
+<Warning>
+Regenerating a chapter marks all subsequent chapters as "context stale" because they were written based on the old chapter's summary. You may want to regenerate following chapters as well.
+</Warning>
+
+## Custom chronicle instructions
+
+You can customize the chronicler's style with persistent instructions:
+
+```python title="backend/core/chronicle.py"
+custom_instructions = self.db.get_chronicle_custom_instructions(save_id)
+
+if custom_instructions and custom_instructions.strip():
+    custom_section = f"""
+=== CHRONICLE STYLE CUSTOMIZATION (player-provided) ===
+{custom_instructions.strip()}
+"""
+```
+
+**Example customizations:**
+- "Write in a more poetic, flowery style"
+- "Keep it concise and matter-of-fact"
+- "Include more military details"
+- "Focus on diplomatic intrigue"
+- "Write from the perspective of the defeated"
+
+<Tip>
+Custom instructions are saved per-save and apply to all future chapter generations and regenerations.
+</Tip>
+
+## Performance and limits
+
+Chronicle generation is optimized to handle large campaigns:
+
+### Event limits
+
+```python title="backend/core/chronicle.py"
+# Hard caps to keep Gemini requests reasonably sized
+MAX_EVENTS_PER_CHAPTER_PROMPT = 250
+MAX_EVENTS_CURRENT_ERA_PROMPT = 200
+```
+
+### Auto-generation schedule
+
+```python title="backend/core/chronicle.py"
+# Auto chapter-only scheduling (background refresh)
+AUTO_CHAPTER_IDLE_INTERVAL_SECONDS = 5 * 60  # 5 minutes when no chapters pending
+AUTO_CHAPTER_PENDING_INTERVAL_SECONDS = 30    # 30 seconds when chapters are pending
+```
+
+### Batch finalization
+
+```python title="backend/core/chronicle.py"
+# Maximum chapters to finalize per request (prevent timeout)
+MAX_CHAPTERS_PER_REQUEST = 2
+```
+
+<Info>
+When catching up on multiple pending chapters, the system finalizes 2 at a time to prevent timeouts. Subsequent chapters are finalized in follow-up requests.
+</Info>
+
+## Cross-session persistence
+
+Chronicles are saved per-save (not per-session), ensuring your narrative persists even if you start new playthroughs from the same save:
+
+```python title="backend/core/chronicle.py"
+# Get save_id for cross-session continuity
+save_id = self.db.get_save_id_for_session(session_id)
+if not save_id:
+    session = self.db.get_session_by_id(session_id)
+    if not session:
+        raise ValueError(f"Session not found: {session_id}")
+    save_id = session.get("save_id")
+```
+
+<Note>
+The save_id is computed from your empire name, player ID, and campaign root, ensuring chronicles follow your specific playthrough even across multiple session files.
+</Note>
+
+## Export options
+
+Chronicles can be exported in multiple formats for sharing:
+
+- **Plain text**: Simple text format for copying
+- **Markdown**: Formatted with headers and emphasis
+- **HTML**: Styled for web display
+
+Each format preserves the chapter structure, epigraphs, quotes, and declarations.

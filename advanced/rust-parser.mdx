@@ -1,0 +1,313 @@
+---
+title: Rust parser
+description: Deep dive into the stellaris-parser CLI, building from source, and Python integration
+---
+
+The Rust parser (`stellaris-parser`) is the core parsing engine for Stellaris Companion. It provides fast, reliable extraction of Stellaris save files using the [jomini](https://crates.io/crates/jomini) Clausewitz format parser.
+
+## Overview
+
+The parser provides two operational modes:
+
+1. **One-shot CLI commands** - Parse the save each time
+2. **Session mode** - Parse once, then answer multiple queries over stdin/stdout
+
+The Python backend primarily uses **session mode** to avoid re-parsing overhead.
+
+<Note>
+Pre-built binaries are published via [GitHub Releases](https://github.com/gitmaan/stellaris-companion/releases). The local `bin/` directory is used for packaging and manual placement.
+</Note>
+
+## Building from source
+
+### Prerequisites
+
+- Rust toolchain (install via [rustup](https://rustup.rs/))
+- Cargo (included with Rust)
+
+### Build steps
+
+```bash
+cd stellaris-parser
+cargo build --release
+```
+
+The compiled binary will be located at:
+```
+stellaris-parser/target/release/stellaris-parser
+```
+
+### Build configuration
+
+The release profile in `Cargo.toml` is optimized for size and performance:
+
+```toml stellaris-parser/Cargo.toml
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+```
+
+### Dependencies
+
+Key dependencies from `Cargo.toml:8`:
+
+<CodeGroup>
+```toml Core dependencies
+jomini = "0.28"              # Clausewitz format parser
+clap = { version = "4", features = ["derive"] }  # CLI framework
+serde_json = "1.0"           # JSON serialization
+anyhow = "1.0"               # Error handling
+zip = "2.2"                  # .sav file extraction
+aho-corasick = "1.1"         # Fast multi-pattern search
+```
+</CodeGroup>
+
+## CLI commands
+
+The CLI is implemented in `stellaris-parser/src/main.rs` and provides several subcommands:
+
+### Extract sections
+
+Extract specific sections from a save file:
+
+```bash
+./stellaris-parser extract-save test_save.sav \
+  --sections meta,galaxy,player \
+  --schema-version 1 \
+  --output -
+```
+
+### Iterate section entries
+
+Stream entries from a large section without loading all into memory:
+
+```bash
+./stellaris-parser iter-save test_save.sav \
+  --section country \
+  --format jsonl \
+  --schema-version 1
+```
+
+### Session mode
+
+Start an interactive session for multiple queries:
+
+```bash
+./stellaris-parser serve --path save.sav
+```
+
+Session mode reads newline-delimited JSON requests from stdin and writes responses to stdout.
+
+## Exit codes
+
+The binary uses consistent exit codes for error handling:
+
+| Code | Meaning |
+|------|--------|
+| `1` | File not found |
+| `2` | Parse error or runtime error |
+| `3` | Invalid arguments (clap parse error) |
+
+## Error format
+
+On fatal CLI errors, the parser prints a JSON object to **stderr**:
+
+```json
+{
+  "schema_version": 1,
+  "tool_version": "0.4.0",
+  "error": "ParseError",
+  "message": "Failed to parse save file at line 1234"
+}
+```
+
+## Python integration
+
+The Python backend integrates with the Rust parser through `stellaris_companion/rust_bridge.py`.
+
+### Binary location resolution
+
+The bridge searches for the parser binary in the following order:
+
+<Steps>
+  <Step title="Environment variable">
+    `PARSER_BINARY` environment variable (for testing/override)
+  </Step>
+  <Step title="Packaged app">
+    `rust-parser/` folder in Electron resources (PyInstaller bundle)
+  </Step>
+  <Step title="Development location">
+    `stellaris-parser/target/release/stellaris-parser`
+  </Step>
+  <Step title="Package bin directory">
+    `bin/` directory relative to the Python module
+  </Step>
+</Steps>
+
+### Session context manager
+
+For improved performance when making multiple queries against the same save, use the session context manager:
+
+```python stellaris_companion/rust_bridge.py
+from stellaris_companion.rust_bridge import session as rust_session
+
+with rust_session(save_path):
+    # All extract_sections/iter_section_entries calls inside this block
+    # will use the same parsed data without re-parsing
+    data1 = extract_sections(save_path, ["meta"])
+    data2 = extract_sections(save_path, ["player"])
+    for key, country in iter_section_entries(save_path, "country"):
+        process_country(country)
+```
+
+### RustSession class
+
+The `RustSession` class provides the session-mode interface:
+
+```python
+class RustSession:
+    def extract_sections(self, sections: list[str]) -> dict:
+        """Extract specific sections from the parsed save."""
+    
+    def iter_section(self, section: str, batch_size: int = 100) -> Iterator[tuple[str, dict]]:
+        """Stream entries from a section."""
+    
+    def get_entry(self, section: str, key: str) -> dict | None:
+        """Fetch a single entry by section and key ID."""
+    
+    def get_entries(self, section: str, keys: list[str], fields: list[str] | None = None) -> list[dict]:
+        """Batch fetch multiple entries with optional field projection."""
+    
+    def count_keys(self, keys: list[str]) -> dict:
+        """Count occurrences of specific keys throughout the parsed save."""
+    
+    def contains_tokens(self, tokens: list[str]) -> dict:
+        """Check if specific tokens appear anywhere in the raw gamestate bytes."""
+```
+
+### Error handling
+
+The bridge raises `ParserError` exceptions with structured error information:
+
+```python stellaris_companion/rust_bridge.py:186
+class ParserError(Exception):
+    """Error from Rust parser.
+    
+    Attributes:
+        message: Human-readable error description
+        line: Line number where error occurred (if available)
+        col: Column number where error occurred (if available)
+        exit_code: Process exit code (1=file not found, 2=parse error, 3=invalid args)
+    """
+```
+
+### Platform-specific handling
+
+The bridge includes Windows-specific subprocess configuration to suppress console windows:
+
+```python stellaris_companion/rust_bridge.py:89
+def _windows_subprocess_kwargs() -> dict[str, object]:
+    """Return subprocess kwargs that suppress console windows on Windows."""
+    if os.name != "nt":
+        return {}
+    
+    kwargs: dict[str, object] = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+    
+    return kwargs
+```
+
+## Session mode protocol
+
+### Request format
+
+Requests are newline-delimited JSON objects with an `op` field:
+
+```json
+{"op":"extract_sections","sections":["meta","player"]}
+{"op":"get_entry","section":"country","key":"0"}
+{"op":"iter_section","section":"country","batch_size":100}
+```
+
+### Response format
+
+Success responses include `"ok": true`:
+
+```json
+{"ok":true,"data":{"meta":{"date":"2431.02.18"},...}}
+```
+
+Error responses include structured error information:
+
+```json
+{
+  "ok": false,
+  "error": "ParseError",
+  "message": "Failed to parse save file",
+  "exit_code": 2,
+  "schema_version": 1,
+  "tool_version": "0.4.0",
+  "game": "stellaris"
+}
+```
+
+### Streaming responses
+
+The `iter_section` operation returns multiple response lines:
+
+<Steps>
+  <Step title="Stream header">
+    ```json
+    {"ok":true,"stream":true,"op":"iter_section","section":"country"}
+    ```
+  </Step>
+  <Step title="Entry batches">
+    ```json
+    {"ok":true,"entries":[{"key":"0","value":{...}},{"key":"1","value":{...}}]}
+    ```
+  </Step>
+  <Step title="Done marker">
+    ```json
+    {"ok":true,"done":true,"op":"iter_section","section":"country"}
+    ```
+  </Step>
+</Steps>
+
+## Performance optimization
+
+The Python bridge uses [orjson](https://pypi.org/project/orjson/) for ~80% faster JSON parsing compared to stdlib json:
+
+```python stellaris_companion/rust_bridge.py:34
+try:
+    import orjson
+    _json_loads = orjson.loads
+    _ORJSON_AVAILABLE = True
+except ImportError:
+    import json
+    _json_loads = json.loads
+    _ORJSON_AVAILABLE = False
+```
+
+## Supported operations
+
+Full list of session-mode operations from `stellaris-parser/src/commands/serve.rs`:
+
+- `extract_sections` - Extract multiple top-level sections
+- `iter_section` - Stream entries from a section
+- `get_entry` - Fetch a single entry by key
+- `get_entries` - Batch fetch with optional field projection
+- `count_keys` - Count key occurrences throughout the save
+- `contains_tokens` - Fast multi-pattern search using Aho-Corasick
+- `contains_kv` - Check for specific key=value pairs
+- `get_country_summaries` - Lightweight country projections
+- `get_duplicate_values` - Extract all values for duplicate keys
+- `get_entry_text` - Get raw Clausewitz text for targeted parsing
+- `multi` - Batch multiple non-streaming operations
+- `close` - Terminate the session
+
+<Note>
+The `multi` operation excludes `iter_section` and `close` as they require special handling.
+</Note>

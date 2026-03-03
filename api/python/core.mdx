@@ -1,0 +1,351 @@
+---
+title: "Core Module"
+description: "Main classes for the Stellaris Companion - AI advisor and chronicle generation"
+---
+
+# Core Module
+
+The `backend.core` module provides the main functionality for the Stellaris Companion, including the AI-powered strategic advisor and chronicle generation system.
+
+## Companion
+
+The main AI advisor class powered by Google's Gemini API.
+
+```python
+from backend.core import Companion
+
+companion = Companion(
+    save_path="/path/to/save.sav",
+    api_key="your-google-api-key"
+)
+```
+
+### Constructor
+
+<ParamField path="save_path" type="str | Path | None">
+  Path to the Stellaris .sav file. If None, will try to find most recent save.
+</ParamField>
+
+<ParamField path="api_key" type="str | None">
+  Google API key. If None, reads from `GOOGLE_API_KEY` environment variable.
+</ParamField>
+
+<ParamField path="auto_precompute" type="bool" default="True">
+  Whether to automatically start background precomputation of game state briefings.
+</ParamField>
+
+### Properties
+
+<ResponseField name="is_loaded" type="bool">
+  Check if a save file is currently loaded.
+</ResponseField>
+
+<ResponseField name="system_prompt" type="str">
+  The dynamic personality prompt built from empire data.
+</ResponseField>
+
+<ResponseField name="custom_instructions" type="str | None">
+  Per-playthrough advisor customization text.
+</ResponseField>
+
+### Methods
+
+#### load_save
+
+Load a save file and initialize the companion.
+
+```python
+companion.load_save("/path/to/autosave_2350.01.01.sav")
+```
+
+<ParamField path="save_path" type="str | Path" required>
+  Path to the Stellaris .sav file
+</ParamField>
+
+#### ask_precomputed
+
+Ask a question using the fully precomputed briefing (no tool calls).
+
+```python
+response, elapsed_time = companion.ask_precomputed(
+    question="What should I focus on next?",
+    session_key="gameplay-session-1",
+    save_id="commonwealth-2350"
+)
+```
+
+<ParamField path="question" type="str" required>
+  The user's question to the advisor
+</ParamField>
+
+<ParamField path="session_key" type="str" required>
+  Unique key for conversation session (enables conversation memory)
+</ParamField>
+
+<ParamField path="save_id" type="str | None">
+  Save identifier for cross-session memory
+</ParamField>
+
+<ParamField path="history_context" type="str | None">
+  Additional historical context to include
+</ParamField>
+
+<ResponseField name="response" type="str">
+  The advisor's response text
+</ResponseField>
+
+<ResponseField name="elapsed_time" type="float">
+  Time taken to generate the response in seconds
+</ResponseField>
+
+#### reload_save
+
+Reload the save file and rebuild personality.
+
+```python
+identity_changed = companion.reload_save()
+```
+
+<ParamField path="new_path" type="Path | None">
+  Optional new path to switch to. If None, reloads from current path.
+</ParamField>
+
+<ResponseField name="identity_changed" type="bool">
+  True if empire identity (ethics, authority, civics) changed
+</ResponseField>
+
+#### get_call_stats
+
+Get performance statistics from the last request.
+
+```python
+stats = companion.get_call_stats()
+print(f"Wall time: {stats['wall_time_ms']}ms")
+print(f"Tools used: {stats['tools_used']}")
+```
+
+<ResponseField name="total_calls" type="int">
+  Number of tool calls made
+</ResponseField>
+
+<ResponseField name="tools_used" type="list[str]">
+  List of tool names called
+</ResponseField>
+
+<ResponseField name="wall_time_ms" type="float">
+  Total time in milliseconds
+</ResponseField>
+
+<ResponseField name="response_length" type="int">
+  Length of final response text
+</ResponseField>
+
+<ResponseField name="payload_sizes" type="dict">
+  Dict mapping tool names to response sizes in bytes
+</ResponseField>
+
+#### set_custom_instructions
+
+Set per-playthrough advisor customization.
+
+```python
+companion.set_custom_instructions(
+    "Focus on diplomatic solutions. Use formal language."
+)
+```
+
+<ParamField path="text" type="str | None" required>
+  Custom instructions text (None to clear)
+</ParamField>
+
+---
+
+## ChronicleGenerator
+
+LLM-powered narrative generation for empire storytelling.
+
+```python
+from backend.core.chronicle import ChronicleGenerator
+from backend.core.database import GameDatabase
+
+db = GameDatabase("history.db")
+generator = ChronicleGenerator(db, api_key="your-api-key")
+
+chronicle = generator.generate_chronicle(
+    session_id="session-123",
+    force_refresh=True
+)
+```
+
+### Constructor
+
+<ParamField path="db" type="GameDatabase" required>
+  Database instance containing game history
+</ParamField>
+
+<ParamField path="api_key" type="str | None">
+  Google API key. If None, reads from `GOOGLE_API_KEY` environment variable.
+</ParamField>
+
+### Methods
+
+#### generate_chronicle
+
+Generate an incremental chronicle for the session.
+
+```python
+result = generator.generate_chronicle(
+    session_id="session-123",
+    force_refresh=True,
+    chapter_only=False
+)
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="force_refresh" type="bool" default="False">
+  Force regeneration even if cached version exists
+</ParamField>
+
+<ParamField path="chapter_only" type="bool" default="False">
+  Only update chapters, skip current era generation
+</ParamField>
+
+<ResponseField name="chapters" type="list[dict]">
+  List of finalized chapter objects with title, narrative, dates, etc.
+</ResponseField>
+
+<ResponseField name="current_era" type="dict | None">
+  Current unfinalized era narrative (teaser for ongoing events)
+</ResponseField>
+
+<ResponseField name="chronicle" type="str">
+  Full chronicle text (backward compatible)
+</ResponseField>
+
+<ResponseField name="pending_chapters" type="int">
+  Number of chapters waiting to be finalized
+</ResponseField>
+
+<ResponseField name="cached" type="bool">
+  Whether this response used cached data
+</ResponseField>
+
+<ResponseField name="event_count" type="int">
+  Total events in the chronicle
+</ResponseField>
+
+#### regenerate_chapter
+
+Regenerate a specific finalized chapter.
+
+```python
+result = generator.regenerate_chapter(
+    session_id="session-123",
+    chapter_number=2,
+    confirm=True,
+    regeneration_instructions="Make it more dramatic"
+)
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="chapter_number" type="int" required>
+  Chapter number to regenerate (1-indexed)
+</ParamField>
+
+<ParamField path="confirm" type="bool" default="False">
+  Must be True to confirm regeneration
+</ParamField>
+
+<ParamField path="regeneration_instructions" type="str | None">
+  One-time guidance for this regeneration
+</ParamField>
+
+<ResponseField name="chapter" type="dict">
+  The regenerated chapter object
+</ResponseField>
+
+<ResponseField name="regenerated" type="bool">
+  Always True on success
+</ResponseField>
+
+<ResponseField name="stale_chapters" type="list[int]">
+  Chapter numbers marked as context-stale
+</ResponseField>
+
+#### generate_recap
+
+Generate a session recap.
+
+```python
+recap = generator.generate_recap(
+    session_id="session-123",
+    style="dramatic",
+    max_events=30
+)
+```
+
+<ParamField path="session_id" type="str" required>
+  Session identifier
+</ParamField>
+
+<ParamField path="style" type="str" default="summary">
+  "summary" (deterministic) or "dramatic" (LLM-powered)
+</ParamField>
+
+<ParamField path="max_events" type="int" default="30">
+  Maximum events to include in recap
+</ParamField>
+
+<ResponseField name="recap" type="str">
+  The generated recap text
+</ResponseField>
+
+<ResponseField name="style" type="str">
+  The style used
+</ResponseField>
+
+<ResponseField name="events_summarized" type="int">
+  Number of events included (for dramatic style)
+</ResponseField>
+
+## Example: Complete Workflow
+
+```python
+from backend.core import Companion
+from backend.core.chronicle import ChronicleGenerator
+from backend.core.database import GameDatabase
+import os
+
+# Set up API key
+os.environ['GOOGLE_API_KEY'] = 'your-key-here'
+
+# Initialize companion
+companion = Companion(save_path="/path/to/game.sav")
+
+# Ask strategic questions
+response, time = companion.ask_precomputed(
+    question="What are my biggest threats?",
+    session_key="session-1"
+)
+print(f"Advisor says: {response}")
+
+# Generate chronicle
+db = GameDatabase("stellaris_history.db")
+gen = ChronicleGenerator(db)
+
+chronicle = gen.generate_chronicle(
+    session_id="session-1",
+    force_refresh=True
+)
+
+for chapter in chronicle['chapters']:
+    print(f"Chapter {chapter['number']}: {chapter['title']}")
+    print(chapter['narrative'])
+    print()
+```

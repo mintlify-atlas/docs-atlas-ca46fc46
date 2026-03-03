@@ -1,0 +1,338 @@
+---
+title: Installation
+description: Install Python, Rust, and Node.js dependencies for Stellaris Companion.
+---
+
+# Installation
+
+Stellaris Companion requires three language environments: Python for the backend, Rust for the fast parser, and Node.js for the Electron desktop app.
+
+## Requirements
+
+<CardGroup cols={3}>
+  <Card title="Python 3.10+" icon="python">
+    Backend server and save extraction logic.
+  </Card>
+  
+  <Card title="Rust toolchain" icon="rust">
+    Required for the `stellaris-parser` binary.
+  </Card>
+  
+  <Card title="Node.js" icon="node-js">
+    Electron desktop app and React renderer.
+  </Card>
+</CardGroup>
+
+You'll also need a **Gemini API key** from [Google AI Studio](https://aistudio.google.com/).
+
+## Step 1: Install Python dependencies
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/gitmaan/stellaris-companion.git
+    cd stellaris-companion
+    ```
+  </Step>
+  
+  <Step title="Create virtual environment">
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+    
+    <Note>
+    Using a virtual environment keeps dependencies isolated from your system Python.
+    </Note>
+  </Step>
+  
+  <Step title="Install Python packages">
+    ```bash
+    pip install .
+    ```
+    
+    This installs dependencies declared in `pyproject.toml`:
+    
+    - `google-genai>=1.0.0` - Gemini API client
+    - `fastapi>=0.100.0` - Backend API server
+    - `uvicorn>=0.23.0` - ASGI server
+    - `pydantic>=2.0.0` - Data validation
+    - `python-dotenv>=1.0.0` - Environment variable management
+    - `watchdog>=3.0` - File system monitoring
+    - `orjson>=3.9.0` - Fast JSON parsing (~80% faster than stdlib)
+  </Step>
+</Steps>
+
+### Optional: Install development dependencies
+
+If you plan to contribute or run tests:
+
+```bash
+pip install ".[dev]"
+```
+
+This adds:
+- `pytest>=7.0` - Test framework
+- `pytest-cov>=4.0` - Coverage reporting
+- `ruff>=0.1.0` - Fast linter and formatter
+- `mypy>=1.0` - Static type checking
+
+## Step 2: Build the Rust parser
+
+The Rust parser is **required** for save file extraction. It's built on [jomini](https://crates.io/crates/jomini) and is significantly faster than regex-style parsing for large saves.
+
+<Steps>
+  <Step title="Install Rust toolchain">
+    If you don't have Rust installed:
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    
+    Or visit [rustup.rs](https://rustup.rs/) for installation instructions.
+    
+    <Note>
+    Restart your terminal after installing Rust to ensure `cargo` is in your PATH.
+    </Note>
+  </Step>
+  
+  <Step title="Build the parser">
+    ```bash
+    cd stellaris-parser
+    cargo build --release
+    cd ..
+    ```
+    
+    The binary will be at:
+    ```
+    stellaris-parser/target/release/stellaris-parser
+    ```
+    
+    <Warning>
+    The release build is significantly faster than debug builds. Always use `--release` for production use.
+    </Warning>
+  </Step>
+  
+  <Step title="Verify the parser works">
+    Test the parser CLI:
+    
+    ```bash
+    ./stellaris-parser/target/release/stellaris-parser --help
+    ```
+    
+    You should see usage information for the `extract-save` and `iter-save` commands.
+  </Step>
+</Steps>
+
+### Parser CLI examples
+
+The Rust parser can be used standalone:
+
+<CodeGroup>
+```bash Extract specific sections
+./stellaris-parser/target/release/stellaris-parser \
+  extract-save test_save.sav \
+  --sections meta,galaxy \
+  --output -
+```
+
+```bash Iterate over countries
+./stellaris-parser/target/release/stellaris-parser \
+  iter-save test_save.sav \
+  --section country \
+  --format jsonl
+```
+</CodeGroup>
+
+<Note>
+Python integration is automatic via `stellaris_companion.rust_bridge`. You don't need to call the parser manually in normal usage.
+</Note>
+
+### Pre-built binaries
+
+Pre-built binaries are published via [GitHub Releases](https://github.com/gitmaan/stellaris-companion/releases). The local `bin/` directory is used for packaging and manual placement.
+
+If you're on a supported platform, you can skip building from source by downloading a release binary.
+
+## Step 3: Install Node.js dependencies
+
+The Electron app requires Node.js dependencies for both the main process and the React renderer.
+
+<Steps>
+  <Step title="Install Electron dependencies">
+    ```bash
+    npm -C electron install
+    ```
+  </Step>
+  
+  <Step title="Install renderer dependencies">
+    ```bash
+    npm -C electron/renderer install
+    ```
+    
+    The renderer uses:
+    - React 18
+    - TypeScript
+    - Vite (build tool)
+    - Tailwind CSS
+  </Step>
+</Steps>
+
+### Build the renderer (optional)
+
+For production builds:
+
+```bash
+npm -C electron/renderer run build
+```
+
+For development, the `dev.sh` script handles this automatically with hot reload.
+
+## Step 4: Configure your API key
+
+Stellaris Companion needs your Gemini API key to function.
+
+<Steps>
+  <Step title="Get a Gemini API key">
+    Visit [Google AI Studio](https://aistudio.google.com/) and create a new API key.
+    
+    <Note>
+    The free tier includes generous quota for experimentation. See [Google's pricing page](https://ai.google.dev/pricing) for details.
+    </Note>
+  </Step>
+  
+  <Step title="Create a .env file">
+    Copy the example environment file:
+    
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+  
+  <Step title="Add your API key">
+    Edit `.env` and add your key:
+    
+    ```bash .env
+    # REQUIRED - API Keys
+    GOOGLE_API_KEY=your-gemini-api-key-here
+    
+    # ELECTRON APP
+    # Generate a random token for backend security
+    STELLARIS_API_TOKEN=your-random-api-token-here
+    ```
+    
+    Generate a secure random token:
+    
+    ```bash
+    openssl rand -hex 32
+    ```
+  </Step>
+</Steps>
+
+### Environment variables reference
+
+<Tabs>
+  <Tab title="Required">
+    | Variable | Description |
+    |----------|-------------|
+    | `GOOGLE_API_KEY` | Gemini API key from [Google AI Studio](https://aistudio.google.com/) |
+    | `STELLARIS_API_TOKEN` | Random string for Electron ↔ Python backend auth |
+  </Tab>
+  
+  <Tab title="Optional">
+    | Variable | Description | Default |
+    |----------|-------------|----------|
+    | `STELLARIS_SAVE_PATH` | Custom save file path | Auto-detected |
+    | `STELLARIS_DB_PATH` | SQLite database for history tracking | `~/.stellaris-companion/history.db` |
+    | `PARSER_BINARY` | Custom Rust parser binary location | Auto-detected |
+    | `STELLARIS_LOG_LEVEL` | Log level: DEBUG, INFO, WARNING, ERROR | `INFO` |
+    | `STELLARIS_LOG_DIR` | Directory for log files | Console only |
+  </Tab>
+</Tabs>
+
+<Warning>
+**For packaged builds**: Paste your API key in **Config** → **INTELLIGENCE UPLINK** instead of using `.env`.
+</Warning>
+
+## Verify installation
+
+Check that all components are ready:
+
+<CodeGroup>
+```bash Python
+python3 -c "import stellaris_companion; print('✓ Python package OK')"
+```
+
+```bash Rust parser
+./stellaris-parser/target/release/stellaris-parser --version
+```
+
+```bash Node.js
+node --version && npm --version
+```
+</CodeGroup>
+
+If all three commands succeed, you're ready for the quick start guide.
+
+## Troubleshooting
+
+<Accordion title="Import errors when running Python">
+  Make sure your virtual environment is activated:
+  
+  ```bash
+  source venv/bin/activate  # On Windows: venv\Scripts\activate
+  ```
+  
+  And reinstall if needed:
+  
+  ```bash
+  pip install --force-reinstall .
+  ```
+</Accordion>
+
+<Accordion title="Rust parser not found">
+  The Python bridge looks for the parser in these locations (in order):
+  
+  1. `PARSER_BINARY` environment variable
+  2. `rust-parser/` in Electron resources folder (packaged app)
+  3. `stellaris-parser/target/release/stellaris-parser` (development)
+  4. `bin/` directory relative to the Python package
+  5. System PATH
+  
+  If automatic detection fails, set `PARSER_BINARY` explicitly:
+  
+  ```bash
+  export PARSER_BINARY=/path/to/stellaris-parser
+  ```
+</Accordion>
+
+<Accordion title="Port 8742 already in use">
+  The backend runs on port 8742 by default. If you see "address already in use":
+  
+  ```bash
+  # Find the process using port 8742
+  lsof -ti:8742
+  
+  # Kill it
+  kill -9 $(lsof -ti:8742)
+  ```
+  
+  The `dev.sh` script includes automatic cleanup for orphaned processes.
+</Accordion>
+
+<Accordion title="Linux ARM64 not supported">
+  Bundled parser binaries don't support Linux ARM64 yet. Build from source:
+  
+  ```bash
+  cd stellaris-parser
+  cargo build --release
+  export PARSER_BINARY=$(pwd)/target/release/stellaris-parser
+  cd ..
+  ```
+</Accordion>
+
+## Next steps
+
+<Card title="Quick start" icon="rocket" href="/quickstart">
+  Run the app and get your first strategic briefing.
+</Card>

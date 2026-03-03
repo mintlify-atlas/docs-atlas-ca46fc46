@@ -1,0 +1,377 @@
+---
+title: "Save Extractor"
+description: "Extract and query data from Stellaris save files"
+---
+
+# Save Extractor
+
+The `stellaris_save_extractor` module provides the `SaveExtractor` class for reading and parsing Stellaris save files.
+
+## SaveExtractor
+
+Main class for extracting data from `.sav` files.
+
+```python
+from stellaris_save_extractor import SaveExtractor
+
+with SaveExtractor("/path/to/autosave.sav") as extractor:
+    metadata = extractor.get_metadata()
+    print(f"Empire: {metadata['name']}")
+    print(f"Date: {metadata['date']}")
+```
+
+### Constructor
+
+<ParamField path="save_path" type="str" required>
+  Path to the Stellaris .sav file
+</ParamField>
+
+### Core Methods
+
+#### get_metadata
+
+Extract basic save metadata.
+
+```python
+meta = extractor.get_metadata()
+```
+
+<ResponseField name="name" type="str">
+  Empire name
+</ResponseField>
+
+<ResponseField name="date" type="str">
+  Game date (e.g., "2350.01.01")
+</ResponseField>
+
+<ResponseField name="version" type="str">
+  Stellaris version
+</ResponseField>
+
+<ResponseField name="required_dlcs" type="list[str]">
+  List of required DLC IDs
+</ResponseField>
+
+<ResponseField name="missing_dlcs" type="list[str]">
+  List of missing DLC IDs
+</ResponseField>
+
+#### get_empire_identity
+
+Get the player empire's identity and characteristics.
+
+```python
+identity = extractor.get_empire_identity()
+print(f"Ethics: {identity['ethics']}")
+print(f"Authority: {identity['authority']}")
+print(f"Civics: {identity['civics']}")
+```
+
+<ResponseField name="empire_name" type="str">
+  Player empire name
+</ResponseField>
+
+<ResponseField name="species_name" type="str">
+  Primary species name
+</ResponseField>
+
+<ResponseField name="ethics" type="list[str]">
+  List of ethics (e.g., ["fanatic_xenophile", "militarist"])
+</ResponseField>
+
+<ResponseField name="authority" type="str">
+  Government authority type (e.g., "auth_democratic")
+</ResponseField>
+
+<ResponseField name="civics" type="list[str]">
+  List of civic names
+</ResponseField>
+
+<ResponseField name="origin" type="str">
+  Empire origin
+</ResponseField>
+
+<ResponseField name="homeworld" type="str">
+  Homeworld planet name
+</ResponseField>
+
+<ResponseField name="government_type" type="str">
+  Full government type name
+</ResponseField>
+
+#### get_player_status
+
+Get comprehensive player empire status.
+
+```python
+status = extractor.get_player_status()
+print(f"Military Power: {status['military_power']}")
+print(f"Colonies: {status['colony_count']}")
+```
+
+<ResponseField name="military_power" type="int">
+  Total military power rating
+</ResponseField>
+
+<ResponseField name="fleet_count" type="int">
+  Number of military fleets
+</ResponseField>
+
+<ResponseField name="fleet_size" type="int">
+  Total military ships
+</ResponseField>
+
+<ResponseField name="tech_power" type="int">
+  Technology power rating
+</ResponseField>
+
+<ResponseField name="economy_power" type="int">
+  Economy power rating
+</ResponseField>
+
+<ResponseField name="colony_count" type="int">
+  Number of colonized planets
+</ResponseField>
+
+<ResponseField name="colonies" type="dict">
+  Detailed colony information
+</ResponseField>
+
+#### get_resources
+
+Get resource production and consumption.
+
+```python
+resources = extractor.get_resources()
+for resource, value in resources['net_monthly'].items():
+    print(f"{resource}: {value:+.1f}/month")
+```
+
+<ResponseField name="net_monthly" type="dict">
+  Net monthly resources (energy, minerals, food, alloys, etc.)
+</ResponseField>
+
+<ResponseField name="stockpile" type="dict">
+  Current resource stockpiles
+</ResponseField>
+
+<ResponseField name="summary" type="dict">
+  Resource summary statistics
+</ResponseField>
+
+#### get_diplomacy
+
+Get diplomatic relationships and status.
+
+```python
+diplomacy = extractor.get_diplomacy()
+print(f"Allies: {len(diplomacy['allies'])}")
+for rival in diplomacy['rivals']:
+    print(f"Rival: {rival['name']}")
+```
+
+<ResponseField name="allies" type="list[dict]">
+  List of allied empires with details
+</ResponseField>
+
+<ResponseField name="rivals" type="list[dict]">
+  List of rival empires
+</ResponseField>
+
+<ResponseField name="federation" type="dict | None">
+  Federation membership details (if applicable)
+</ResponseField>
+
+<ResponseField name="wars" type="list[dict]">
+  Active wars with details
+</ResponseField>
+
+<ResponseField name="summary" type="dict">
+  Diplomatic summary statistics
+</ResponseField>
+
+#### get_complete_briefing
+
+Get a comprehensive briefing combining all data.
+
+```python
+briefing = extractor.get_complete_briefing()
+# Contains: meta, identity, situation, military, economy, diplomacy, etc.
+```
+
+<ResponseField name="meta" type="dict">
+  Metadata (name, date, version)
+</ResponseField>
+
+<ResponseField name="identity" type="dict">
+  Empire identity and characteristics
+</ResponseField>
+
+<ResponseField name="situation" type="dict">
+  Current game situation analysis
+</ResponseField>
+
+<ResponseField name="military" type="dict">
+  Military status and fleets
+</ResponseField>
+
+<ResponseField name="economy" type="dict">
+  Resource production and economy
+</ResponseField>
+
+<ResponseField name="diplomacy" type="dict">
+  Diplomatic relationships
+</ResponseField>
+
+<ResponseField name="geography" type="dict">
+  Territory and borders
+</ResponseField>
+
+<ResponseField name="technology" type="dict">
+  Research and technology
+</ResponseField>
+
+<ResponseField name="politics" type="dict">
+  Internal politics and factions
+</ResponseField>
+
+### Military & Fleet Methods
+
+#### get_fleets
+
+Get detailed fleet information.
+
+```python
+fleets = extractor.get_fleets()
+for fleet in fleets['military_fleets']:
+    print(f"{fleet['name']}: {fleet['military_power']} power")
+```
+
+#### get_starbases
+
+Get starbase counts and details.
+
+```python
+starbases = extractor.get_starbases()
+print(f"Citadels: {starbases['citadels']}")
+print(f"Total Systems: {starbases['total_systems']}")
+```
+
+### Economy Methods
+
+#### get_economy_summary
+
+Get economy overview with production/consumption.
+
+```python
+economy = extractor.get_economy_summary()
+print(f"Energy: {economy['energy']['net']}/month")
+print(f"Alloys: {economy['alloys']['net']}/month")
+```
+
+### Geography Methods
+
+#### get_territory
+
+Get territory information.
+
+```python
+territory = extractor.get_territory()
+print(f"Systems: {territory['owned_systems']}")
+print(f"Planets: {territory['colonized_planets']}")
+```
+
+#### get_borders
+
+Get border information with neighboring empires.
+
+```python
+borders = extractor.get_borders()
+for neighbor in borders['neighbors']:
+    print(f"Border with: {neighbor['name']}")
+```
+
+### Technology Methods
+
+#### get_research_progress
+
+Get current research status.
+
+```python
+research = extractor.get_research_progress()
+print(f"Physics: {research['physics']['current_tech']}")
+print(f"Research output: {research['total_research_output']}/month")
+```
+
+## Extractor Mixins
+
+The `SaveExtractor` is composed of specialized mixin classes:
+
+- **MetadataMixin** - Basic save metadata
+- **PlayerMixin** - Player empire status
+- **MilitaryMixin** - Fleets and military power
+- **EconomyMixin** - Resources and economy
+- **DiplomacyMixin** - Diplomatic relations
+- **GeographyMixin** - Territory and borders
+- **TechnologyMixin** - Research and tech
+- **PoliticsMixin** - Factions and government
+- **PlanetsMixin** - Planet data
+- **SpeciesMixin** - Species information
+- **EndgameMixin** - Crisis and endgame content
+- **BriefingMixin** - Complete briefing generation
+
+## Example: Analysis Script
+
+```python
+from stellaris_save_extractor import SaveExtractor
+import json
+
+def analyze_save(save_path: str):
+    """Analyze a save file and print key statistics."""
+    with SaveExtractor(save_path) as extractor:
+        # Get comprehensive briefing
+        briefing = extractor.get_complete_briefing()
+        
+        # Print identity
+        identity = briefing['identity']
+        print(f"Empire: {identity['empire_name']}")
+        print(f"Ethics: {', '.join(identity['ethics'])}")
+        print(f"Authority: {identity['authority']}")
+        print()
+        
+        # Print situation
+        situation = briefing['situation']
+        print(f"Game Date: {briefing['meta']['date']}")
+        print(f"Game Phase: {situation['game_phase']}")
+        print(f"At War: {situation['at_war']}")
+        print()
+        
+        # Print military
+        military = briefing['military']
+        print(f"Military Power: {military['total_power']}")
+        print(f"Fleet Count: {military['fleet_count']}")
+        print()
+        
+        # Print economy
+        economy = briefing['economy']
+        print("Monthly Resources:")
+        for resource, value in economy['resources_net'].items():
+            print(f"  {resource}: {value:+.1f}")
+        print()
+        
+        # Print diplomacy
+        diplomacy = briefing['diplomacy']
+        print(f"Allies: {len(diplomacy['allies'])}")
+        print(f"Rivals: {len(diplomacy['rivals'])}")
+        print(f"Wars: {len(diplomacy['wars'])}")
+
+if __name__ == "__main__":
+    analyze_save("/path/to/autosave.sav")
+```
+
+## Performance Notes
+
+- The extractor uses a Rust-based parser for fast section extraction
+- Results are cached per extraction session
+- Use context manager (`with` statement) for automatic cleanup
+- Call `release_gamestate()` to free memory after extraction

@@ -1,0 +1,360 @@
+---
+title: "Discord API"
+description: "IPC API for Discord OAuth integration and relay WebSocket communication"
+---
+
+The Discord API provides OAuth authentication and real-time relay integration for answering questions from Discord. Users can connect their Discord account and receive `/ask` command responses through the app.
+
+## Overview
+
+Access the Discord API through `window.electronAPI.discord` in the renderer process. The main process handles OAuth flows, token management, and WebSocket relay connections securely.
+
+## Discord OAuth
+
+The Discord integration uses OAuth 2.0 PKCE (Proof Key for Code Exchange) flow for secure authentication without requiring a client secret.
+
+### connect()
+
+Start Discord OAuth PKCE flow. Opens browser for user authorization.
+
+<ParamField body="none" type="void">
+  This method takes no parameters.
+</ParamField>
+
+<ResponseField name="success" type="boolean" required>
+  Whether the OAuth flow succeeded
+</ResponseField>
+
+<ResponseField name="userId" type="string">
+  Discord user ID (if successful)
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  Discord username (if successful)
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message (if failed)
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.discord.connect()
+if (result.success) {
+  console.log(`Connected as ${result.username} (${result.userId})`)
+} else {
+  console.error('OAuth failed:', result.error)
+}
+```
+
+<Info>
+  The OAuth flow creates a temporary localhost HTTP server on a random port to receive the callback. The server automatically closes after receiving the authorization code or after 5 minutes.
+</Info>
+
+### disconnect()
+
+Disconnect from Discord. Clears tokens and closes relay connection.
+
+<ResponseField name="success" type="boolean" required>
+  Always true
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.discord.disconnect()
+console.log('Disconnected from Discord')
+```
+
+### status()
+
+Get current Discord connection status.
+
+<ResponseField name="connected" type="boolean" required>
+  Whether Discord is connected
+</ResponseField>
+
+<ResponseField name="userId" type="string">
+  Discord user ID (if connected)
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  Discord username (if connected)
+</ResponseField>
+
+<ResponseField name="needsRefresh" type="boolean">
+  Whether the access token needs refreshing
+</ResponseField>
+
+```javascript
+const status = await window.electronAPI.discord.status()
+if (status.connected) {
+  console.log(`Connected as ${status.username}`)
+  if (status.needsRefresh) {
+    console.log('Token needs refresh')
+  }
+}
+```
+
+## Discord Relay
+
+The relay system connects to a Cloudflare Durable Object WebSocket that bridges Discord slash commands to the local backend. When users run `/ask` in Discord, the question is routed through the relay to the app.
+
+### relayConnect()
+
+Connect to Discord relay WebSocket using stored tokens.
+
+<ResponseField name="success" type="boolean" required>
+  Whether the relay connection succeeded
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message (if failed)
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.discord.relayConnect()
+if (result.success) {
+  console.log('Connected to Discord relay')
+} else {
+  console.error('Relay connection failed:', result.error)
+}
+```
+
+<Warning>
+  Returns error if not connected to Discord OAuth first. Call `discord.connect()` before attempting relay connection.
+</Warning>
+
+### relayDisconnect()
+
+Disconnect from Discord relay WebSocket.
+
+<ResponseField name="success" type="boolean" required>
+  Always true
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.discord.relayDisconnect()
+console.log('Disconnected from relay')
+```
+
+### relayStatus()
+
+Get current Discord relay connection state.
+
+<ResponseField name="state" type="string" required>
+  Connection state: "disconnected", "connecting", "connected", "reconnecting", or "error"
+</ResponseField>
+
+<ResponseField name="userId" type="string">
+  Discord user ID (if connected)
+</ResponseField>
+
+<ResponseField name="retryCount" type="number" required>
+  Number of reconnection attempts
+</ResponseField>
+
+<ResponseField name="lastConnectedAt" type="number">
+  Timestamp of last successful connection (for showing "Last connected: X ago" during reconnecting)
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message (if state is "error")
+</ResponseField>
+
+```javascript
+const status = await window.electronAPI.discord.relayStatus()
+console.log('Relay state:', status.state)
+if (status.state === 'reconnecting') {
+  console.log(`Reconnecting (attempt ${status.retryCount}/10)...`)
+  if (status.lastConnectedAt) {
+    const ago = Date.now() - status.lastConnectedAt
+    console.log(`Last connected ${Math.round(ago / 1000)}s ago`)
+  }
+}
+```
+
+## Relay Event Listeners
+
+### onDiscordRelayStatus(callback)
+
+Listen for relay connection state changes.
+
+<ParamField body="callback" type="function" required>
+  Callback function that receives relay status updates
+</ParamField>
+
+**Returns:** Cleanup function to unregister the callback.
+
+```javascript
+const cleanup = window.electronAPI.onDiscordRelayStatus((status) => {
+  console.log('Relay status:', status.state)
+  
+  switch (status.state) {
+    case 'connected':
+      console.log('✅ Connected to Discord relay')
+      break
+    case 'reconnecting':
+      console.log(`🔄 Reconnecting (${status.retryCount}/10)...`)
+      break
+    case 'error':
+      console.error('❌ Error:', status.error)
+      break
+    case 'disconnected':
+      console.log('⚫ Disconnected')
+      break
+  }
+})
+
+// Later, to stop listening:
+cleanup()
+```
+
+### onDiscordAuthRequired(callback)
+
+Listen for authentication expiry events (when token expires and re-auth is needed).
+
+<ParamField body="callback" type="function" required>
+  Callback function that receives auth required notifications
+</ParamField>
+
+**Returns:** Cleanup function to unregister the callback.
+
+```javascript
+const cleanup = window.electronAPI.onDiscordAuthRequired((data) => {
+  console.log('Discord re-auth required:', data.reason)
+  // Show UI to prompt user to reconnect
+  showReconnectPrompt()
+})
+
+// Later:
+cleanup()
+```
+
+<Note>
+  The preload script uses a managed listener system to prevent memory leaks. Always call the returned cleanup function when done listening.
+</Note>
+
+## Reconnection Behavior
+
+The Discord relay implements automatic reconnection with exponential backoff:
+
+- **Initial delay**: 1 second
+- **Max delay**: 30 seconds
+- **Backoff multiplier**: 2x each attempt
+- **Max retries**: 10 attempts
+- **Jitter**: ±20% randomness to prevent thundering herd
+
+Special cases:
+- **Code 1006/1001** (connection lost): Quick reconnect after 1 second (often indicates server deploy)
+- **Code 4001** (auth revoked): No retry, requires re-authentication
+- **Code 4002** (replaced): No retry (another device connected)
+- **Max retries exceeded**: State changes to "error", shows error indicator in UI
+
+## OAuth Token Refresh
+
+The Discord OAuth system automatically refreshes access tokens when they expire:
+
+1. Tokens are checked before each relay reconnection attempt
+2. If token expires within 5 minutes, automatic refresh is triggered
+3. Refresh token is used to obtain new access token (no user interaction)
+4. If refresh token is also expired, `discord-auth-required` event is emitted
+
+```javascript
+// Automatic refresh happens transparently during relay operations
+// No manual intervention needed unless both tokens expire
+
+window.electronAPI.onDiscordAuthRequired((data) => {
+  // Both access token and refresh token expired
+  // User needs to reconnect
+  console.log('Auth expired, prompting reconnect...')
+  await window.electronAPI.discord.connect()
+})
+```
+
+## Session Keys
+
+When handling `/ask` commands from Discord, the relay constructs session keys to maintain conversation context:
+
+**Pattern**: `discord:{user_id}:{guild_id}:{channel_id}`
+
+- **user_id**: Discord user ID who sent the command
+- **guild_id**: Server ID (or "dm" for direct messages)
+- **channel_id**: Channel ID (or "dm" for direct messages)
+
+This ensures each Discord user/channel combination has a separate conversation thread with the Session Advisor.
+
+```javascript
+// Example session key format:
+// "discord:123456789:987654321:555666777"
+// or "discord:123456789:dm:dm" for DMs
+```
+
+## WebSocket Message Types
+
+The relay WebSocket uses JSON messages with the following types:
+
+### Sent by client (app → relay)
+
+<ParamField body="type: 'auth'" type="object">
+  Initial authentication message with userId
+</ParamField>
+
+<ParamField body="type: 'response'" type="object">
+  Response to an /ask command. Contains interactionToken and text.
+</ParamField>
+
+<ParamField body="type: 'disconnect'" type="object">
+  Clean disconnect signal
+</ParamField>
+
+### Received by client (relay → app)
+
+<ParamField body="type: 'auth_ok'" type="object">
+  Authentication successful
+</ParamField>
+
+<ParamField body="type: 'auth_error'" type="object">
+  Authentication failed. Contains reason.
+</ParamField>
+
+<ParamField body="type: 'replaced'" type="object">
+  Connection replaced by another device
+</ParamField>
+
+<ParamField body="type: 'ask'" type="object">
+  Discord /ask command. Contains interactionToken, question, userId, guildId, channelId.
+</ParamField>
+
+```javascript
+// Example: handling an /ask command (handled automatically by main process)
+{
+  type: 'ask',
+  interactionToken: 'unique_interaction_id',
+  question: 'What should I research next?',
+  userId: '123456789',
+  guildId: '987654321',
+  channelId: '555666777'
+}
+
+// App processes the question through backend.chat() and sends:
+{
+  type: 'response',
+  interactionToken: 'unique_interaction_id',
+  text: 'Based on your current situation, I recommend researching...'
+}
+```
+
+## Security
+
+- **Tokens never exposed to renderer**: OAuth tokens stored in Electron safeStorage, never accessible from renderer process
+- **No client secret**: PKCE flow for public clients, client secret not required
+- **IPC validation**: All IPC calls validated by main process before execution
+- **Secure storage**: Access token, refresh token stored using OS-level encryption (macOS Keychain, Windows DPAPI, Linux Secret Service)
+
+## Source Code References
+
+- **Preload bridge**: `electron/preload.js:127-147` (Discord IPC handlers)
+- **IPC handlers**: `electron/main/ipc/discord.js:1-53`
+- **OAuth implementation**: `electron/main/discord/oauth.js:1-509`
+- **Relay WebSocket**: `electron/main/discord/relay.js:1-467`
+- **PKCE code verifier**: `electron/main/discord/oauth.js:32-34` (generateCodeVerifier)
+- **Token refresh**: `electron/main/discord/oauth.js:383-443` (refreshAccessToken)
+- **Reconnection logic**: `electron/main/discord/relay.js:329-381` (handleDiscordRelayClose)

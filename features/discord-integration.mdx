@@ -1,0 +1,433 @@
+---
+title: Discord integration
+description: Ask your strategic advisor questions from Discord using /ask commands with real-time relay and OAuth authentication
+---
+
+Discord Integration allows you to interact with your Stellaris Companion advisor directly from Discord. Connect your Discord account, and use the `/ask` command to get strategic advice without leaving your chat.
+
+## OAuth authentication
+
+Stellaris Companion uses Discord OAuth 2.0 with PKCE (Proof Key for Code Exchange) for secure, passwordless authentication.
+
+### PKCE flow
+
+PKCE is a secure OAuth extension that doesn't require storing client secrets:
+
+```javascript title="electron/main/discord/oauth.js"
+function generateCodeVerifier() {
+  // 32 bytes -> 43 base64url characters (per RFC 7636)
+  return crypto.randomBytes(32).toString('base64url')
+}
+
+function generateCodeChallenge(codeVerifier) {
+  return crypto.createHash('sha256').update(codeVerifier).digest('base64url')
+}
+```
+
+### Connecting to Discord
+
+<Steps>
+  <Step title="Start OAuth flow">
+    Click "Connect to Discord" in the Stellaris Companion settings.
+  </Step>
+  <Step title="Authorize in browser">
+    Your default browser opens to Discord's authorization page. The app requests:
+    - `identify`: To get your Discord username and ID
+    - `guilds`: To see which servers you're in (required for guild commands)
+  </Step>
+  <Step title="Complete authorization">
+    Click "Authorize" on the Discord page. The browser will redirect to a local callback server.
+  </Step>
+  <Step title="Connection established">
+    Stellaris Companion receives your OAuth tokens and automatically connects to the relay service.
+  </Step>
+</Steps>
+
+### Token storage
+
+OAuth tokens are stored securely using Electron's `safeStorage` API:
+
+```javascript title="electron/main/discord/oauth.js"
+function storeDiscordTokens(tokens) {
+  setSecret(secretKeys.accessToken, tokens.accessToken)
+  if (tokens.refreshToken) {
+    setSecret(secretKeys.refreshToken, tokens.refreshToken)
+  }
+
+  store.set('discordUserId', tokens.userId)
+  store.set('discordUsername', tokens.username)
+  store.set('discordTokenExpiry', new Date(tokens.expiresAt).toISOString())
+}
+```
+
+<Info>
+Access tokens are encrypted at rest using OS-level encryption (Keychain on macOS, Credential Manager on Windows, Secret Service API on Linux).
+</Info>
+
+### Token refresh
+
+Access tokens expire after 7 days. Stellaris Companion automatically refreshes them:
+
+```javascript title="electron/main/discord/oauth.js"
+async function ensureValidTokens() {
+  const tokens = await getDiscordTokens()
+
+  if (!tokens) {
+    throw new Error('NOT_AUTHENTICATED')
+  }
+
+  // Check if access token expires within 5 minutes
+  const expiryBuffer = 5 * 60 * 1000
+  const needsRefresh = tokens.expiresAt && tokens.expiresAt < (Date.now() + expiryBuffer)
+
+  if (needsRefresh) {
+    console.log('Discord OAuth: access token expiring soon, attempting refresh...')
+
+    if (!tokens.refreshToken) {
+      await clearDiscordTokens()
+      throw new Error('TOKEN_EXPIRED')
+    }
+
+    try {
+      const newTokens = await refreshAccessToken(tokens.refreshToken)
+      await storeDiscordTokens(newTokens)
+      return newTokens
+    } catch (error) {
+      console.error('Discord OAuth: refresh failed:', error.message)
+      await clearDiscordTokens()
+      throw new Error('TOKEN_EXPIRED')
+    }
+  }
+
+  return tokens
+}
+```
+
+<Note>
+Tokens are refreshed proactively (5 minutes before expiry) to prevent interruptions during active use.
+</Note>
+
+## Discord relay service
+
+The relay service connects your local Stellaris Companion to Discord's servers through a Cloudflare Durable Object.
+
+### Architecture overview
+
+```
+┌──────────────┐         ┌───────────────────┐         ┌──────────────┐
+│   Discord    │  HTTP   │  Cloudflare DO    │   WS    │  Stellaris   │
+│   Server     │────────>│  Relay Service    │<────────│  Companion   │
+│              │         │                   │         │   (local)    │
+└──────────────┘         └───────────────────┘         └──────────────┘
+```
+
+1. User types `/ask` in Discord
+2. Discord sends interaction to Cloudflare Worker
+3. Worker forwards question to connected Durable Object
+4. Durable Object sends question via WebSocket to local app
+5. Local app calls Python backend for answer
+6. Answer flows back through WebSocket → DO → Discord
+
+### WebSocket connection
+
+The Electron app maintains a persistent WebSocket connection to the relay:
+
+```javascript title="electron/main/discord/relay.js"
+async function connectToDiscordRelay(relayToken, userId) {
+  // Close any existing connection
+  if (discordRelaySocket) {
+    try {
+      discordRelaySocket.close(1000, 'Reconnecting')
+    } catch (e) {
+      // ignore
+    }
+    discordRelaySocket = null
+  }
+
+  discordRelayUserId = userId
+  updateDiscordRelayConnectionState('connecting')
+
+  try {
+    // Connect with Authorization header containing relay_token
+    discordRelaySocket = new WebSocket(`${relayUrl}/ws`, {
+      headers: {
+        Authorization: `Bearer ${relayToken}`,
+      },
+    })
+
+    discordRelaySocket.on('open', () => {
+      console.log('Discord relay WebSocket connected')
+      discordRelayRetryCount = 0
+      discordRelayRetryDelay = RECONNECT_CONFIG.initialDelayMs
+      discordRelayLastConnectedAt = Date.now()
+      updateDiscordRelayConnectionState('connected')
+
+      // Send auth message
+      discordRelaySocket.send(JSON.stringify({
+        type: 'auth',
+        userId: userId,
+      }))
+    })
+  }
+}
+```
+
+### Reconnection logic
+
+The relay implements exponential backoff for reconnection:
+
+```javascript title="electron/main/discord/relay.js"
+const RECONNECT_CONFIG = {
+  initialDelayMs: 1000,      // First retry after 1 second
+  maxDelayMs: 30000,         // Cap at 30 seconds
+  backoffMultiplier: 2,      // Double each time
+  maxRetries: 10,            // Give up after 10 attempts
+  jitterPercent: 20,         // Add ±20% randomness
+}
+```
+
+<Accordion title="Connection states">
+  The relay connection can be in several states:
+
+  - **disconnected**: No connection, not attempting to connect
+  - **connecting**: Initial connection attempt in progress
+  - **connected**: WebSocket connected and authenticated
+  - **reconnecting**: Connection lost, attempting to reconnect
+  - **error**: Max retries exceeded or authentication failed
+</Accordion>
+
+### Relay token
+
+Relay tokens are short-lived (1 hour) and obtained from the relay service:
+
+```javascript title="electron/main/discord/relay.js"
+async function getRelayToken(discordAccessToken) {
+  try {
+    const response = await fetch(`${relayUrl}/relay/session`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${discordAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('Failed to get relay token:', response.status, errorText)
+      return null
+    }
+
+    const data = await response.json()
+    return data.relay_token
+  } catch (e) {
+    console.error('Error getting relay token:', e.message)
+    return null
+  }
+}
+```
+
+## /ask command handling
+
+The `/ask` command routes questions from Discord to your local advisor.
+
+### Command flow
+
+```typescript title="cloudflare/src/discord.ts"
+export async function editInteractionResponse(
+  appId: string,
+  interactionToken: string,
+  content: string,
+  ephemeral: boolean = true
+): Promise<Response> {
+  const url = `https://discord.com/api/v10/webhooks/${appId}/${interactionToken}/messages/@original`
+
+  return fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      content,
+      flags: ephemeral ? MessageFlags.EPHEMERAL : undefined,
+    }),
+  })
+}
+```
+
+### Message routing
+
+```javascript title="electron/main/discord/relay.js"
+async function handleDiscordAskCommand(message) {
+  const { interactionToken, question, userId, guildId, channelId } = message
+
+  if (!interactionToken || !question) {
+    console.error('Discord relay: invalid ask command', message)
+    return
+  }
+
+  console.log(`Discord relay: processing /ask from user ${userId}`)
+
+  try {
+    // Build session key: discord:{user_id}:{guild_id}:{channel_id}
+    const sessionKey = `discord:${userId}:${guildId || 'dm'}:${channelId || 'dm'}`
+
+    // Call the local Python backend
+    const response = await callBackendApiOrThrow('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        message: question,
+        session_key: sessionKey,
+      }),
+    })
+
+    // Send response back through WebSocket
+    if (discordRelaySocket && discordRelaySocket.readyState === WebSocket.OPEN) {
+      discordRelaySocket.send(JSON.stringify({
+        type: 'response',
+        interactionToken,
+        text: response.text || response.response || 'No response from advisor',
+      }))
+    }
+  } catch (e) {
+    console.error('Discord relay: error calling backend:', e.message)
+
+    // Send error response
+    if (discordRelaySocket && discordRelaySocket.readyState === WebSocket.OPEN) {
+      discordRelaySocket.send(JSON.stringify({
+        type: 'response',
+        interactionToken,
+        text: `⚠️ Error: ${e.message || 'Failed to get response from advisor'}`,
+      }))
+    }
+  }
+}
+```
+
+### Session isolation
+
+Each Discord context (user + guild + channel) gets its own conversation session:
+
+```javascript
+const sessionKey = `discord:${userId}:${guildId || 'dm'}:${channelId || 'dm'}`
+```
+
+<Info>
+This ensures conversations in different Discord channels don't interfere with each other, even for the same user.
+</Info>
+
+### Response splitting
+
+Discord has a 2000 character limit per message. Long responses are automatically split:
+
+```typescript title="cloudflare/src/discord.ts"
+export function splitResponse(text: string, maxLength: number = 2000): string[] {
+  if (text.length <= maxLength) {
+    return [text]
+  }
+
+  const chunks: string[] = []
+  let remaining = text
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining)
+      break
+    }
+
+    // Try to split on paragraph boundary
+    let splitIndex = remaining.lastIndexOf('\n\n', maxLength)
+
+    // Try sentence boundary if no paragraph
+    if (splitIndex <= 0) {
+      splitIndex = remaining.lastIndexOf('. ', maxLength)
+      if (splitIndex > 0) splitIndex += 1
+    }
+
+    // Try word boundary if no sentence
+    if (splitIndex <= 0) {
+      splitIndex = remaining.lastIndexOf(' ', maxLength)
+    }
+
+    // Fall back to hard split
+    if (splitIndex <= 0) {
+      splitIndex = maxLength
+    }
+
+    chunks.push(remaining.slice(0, splitIndex).trim())
+    remaining = remaining.slice(splitIndex).trim()
+  }
+
+  return chunks
+}
+```
+
+<Note>
+The system tries to split on natural boundaries (paragraphs, sentences, words) before resorting to hard character limits.
+</Note>
+
+## Connection status indicators
+
+The app shows real-time connection status:
+
+```javascript title="electron/main/discord/relay.js"
+function updateDiscordRelayConnectionState(state, errorMsg = null) {
+  discordRelayConnectionState = state
+  discordRelayError = errorMsg
+  sendToRenderer('discord-relay-status', {
+    state,
+    userId: discordRelayUserId,
+    retryCount: discordRelayRetryCount,
+    lastConnectedAt: discordRelayLastConnectedAt,
+    error: discordRelayError,
+  })
+}
+```
+
+**Status indicators:**
+- 🟢 **Connected**: Ready to receive commands
+- 🟡 **Reconnecting**: Attempting to reconnect (shows "Last connected: X ago")
+- 🔴 **Error**: Max retries exceeded or authentication failed
+- ⚪ **Disconnected**: Not connected (manual disconnect or not authenticated)
+
+## Privacy and security
+
+### Ephemeral responses
+
+By default, all `/ask` responses are ephemeral (only visible to you):
+
+```typescript title="cloudflare/src/discord.ts"
+export const MessageFlags = {
+  EPHEMERAL: 64,
+} as const
+```
+
+<Tip>
+Ephemeral messages ensure your strategic discussions remain private, even in shared Discord channels.
+</Tip>
+
+### Data handling
+
+- **No message storage**: The relay service does not store your questions or answers
+- **No game state upload**: Your save files never leave your computer
+- **Encrypted tokens**: OAuth tokens are encrypted at rest using OS-level security
+- **Single device**: Only one device can be connected per Discord account
+
+### Disconnecting
+
+To disconnect from Discord:
+
+<Steps>
+  <Step title="Open settings">
+    Navigate to Discord settings in Stellaris Companion.
+  </Step>
+  <Step title="Click disconnect">
+    This closes the WebSocket connection and clears stored tokens.
+  </Step>
+  <Step title="Revoke app (optional)">
+    Visit Discord User Settings → Authorized Apps to completely revoke Stellaris Companion's access.
+  </Step>
+</Steps>
+
+<Warning>
+Disconnecting logs you out immediately. You'll need to reconnect through OAuth to use Discord commands again.
+</Warning>

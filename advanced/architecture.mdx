@@ -1,0 +1,307 @@
+---
+title: Architecture
+description: Understanding the 3-process architecture and data flow in Stellaris Companion
+---
+
+Stellaris Companion is a **3-process** desktop application that separates concerns between the Python backend, Electron main process, and React renderer.
+
+## Process overview
+
+The application consists of three distinct processes:
+
+<CardGroup cols={3}>
+  <Card title="Python backend" icon="python">
+    FastAPI server that reads saves, maintains session/history state, and runs LLM calls
+  </Card>
+  <Card title="Electron main" icon="window">
+    Node.js process that owns OS integrations, spawns/monitors the backend, and proxies HTTP requests
+  </Card>
+  <Card title="React renderer" icon="react">
+    UI-only process that never receives the backend auth token
+  </Card>
+</CardGroup>
+
+## Core data flow
+
+Typical request flow for a chat message:
+
+<Steps>
+  <Step title="Renderer initiates request">
+    Renderer calls `window.electronAPI.backend.chat(...)`
+  </Step>
+  <Step title="Preload bridges IPC">
+    Preload (`electron/preload.js`) forwards via `ipcRenderer.invoke('backend:chat', ...)`
+  </Step>
+  <Step title="Main process handles IPC">
+    Main IPC handler (`electron/main/ipc/backend.js`) calls the backend over HTTP using `electron/main/backendClient.js`
+  </Step>
+  <Step title="Backend processes request">
+    Backend route (`backend/api/server.py`) returns JSON or raises `HTTPException(detail={...})`
+  </Step>
+  <Step title="Main returns envelope">
+    Main returns a **standard IPC envelope** to the renderer
+  </Step>
+  <Step title="Renderer updates UI">
+    Renderer maps the envelope into UI-friendly state in `electron/renderer/hooks/useBackend.ts`
+  </Step>
+</Steps>
+
+## Security boundaries
+
+The architecture enforces security through token isolation:
+
+<Warning>
+The backend uses a **Bearer token** (`STELLARIS_API_TOKEN`) for all HTTP requests. The renderer **never** sees this token.
+</Warning>
+
+- Electron main generates and holds the token
+- Main attaches the token to all backend HTTP requests
+- Renderer is isolated via context isolation + preload bridge
+- Preload only exposes safe IPC methods, never the raw token
+
+### Token implementation
+
+From `electron/main/backendClient.js:70`:
+
+```javascript
+const fetchOptions = {
+  ...restOptions,
+  signal: controller ? controller.signal : undefined,
+  headers: {
+    ...restOptions.headers,
+    Authorization: `Bearer ${getAuthToken()}`,
+    'Content-Type': 'application/json',
+  },
+}
+```
+
+## IPC envelope contract
+
+All backend-proxied IPC calls use a standardized response envelope:
+
+```typescript
+export type BackendIpcResponse<T> =
+  | { ok: true; data: T }
+  | {
+      ok: false
+      error: string
+      code?: string
+      retry_after_ms?: number
+      http_status?: number
+      details?: unknown
+    }
+```
+
+### Error field semantics
+
+- `error` - Human-readable message safe to show in UI
+- `code` - Stable, machine-readable identifier for branching logic
+- `retry_after_ms` - Hint for backoff/retry UX (e.g., briefings not ready)
+- `http_status` - Backend HTTP status when relevant
+- `details` - Diagnostic payload for logs/debug
+
+See `docs/ipc-contract.md` in the source repository for the complete specification.
+
+## Packaged vs development
+
+The application adapts its behavior based on the runtime environment:
+
+### Packaged application
+
+- Electron main runs the bundled PyInstaller executable (`python-backend/stellaris-backend`)
+- Rust parser is located at `resources/rust-parser/stellaris-parser-{platform}-{arch}`
+- All assets are bundled and self-contained
+
+### Development mode
+
+- Electron main starts backend via `python3 -m backend.electron_main`
+- Sets `PYTHONPATH` to repo root (Electron dev usually runs with `cwd = electron/`)
+- Rust parser is at `stellaris-parser/target/release/stellaris-parser`
+- Hot reload enabled for renderer React code
+
+From `docs/architecture.md:29` in source:
+
+<Note>
+In development, Electron sets `PYTHONPATH` to the repo root because Electron dev usually runs with `cwd = electron/`, but the Python imports expect to be run from the repo root.
+</Note>
+
+## Component locations
+
+Key files and their responsibilities:
+
+### Electron main process
+
+| File | Purpose |
+|------|--------|
+| `electron/main.js` | Entry point, window creation, lifecycle |
+| `electron/main/backendClient.js` | HTTP client with IPC envelope shaping |
+| `electron/main/ipc/backend.js` | Backend IPC handlers (`backend:*`) |
+| `electron/main/ipc/discord.js` | Discord integration IPC handlers |
+| `electron/main/ipc/settings.js` | Settings persistence handlers |
+| `electron/main/ipc/updates.js` | Auto-update handlers |
+
+### Backend
+
+| File | Purpose |
+|------|--------|
+| `backend/api/server.py` | FastAPI routes and business logic |
+| `backend/electron_main.py` | Backend entry point for Electron |
+| `stellaris_companion/` | Shared Python runtime utilities |
+| `stellaris_save_extractor/` | Extraction logic and domain models |
+
+### Renderer
+
+| File | Purpose |
+|------|--------|
+| `electron/preload.js` | IPC bridge, exposes safe API surface |
+| `electron/renderer/hooks/useBackend.ts` | React hook wrapping backend API |
+| `electron/renderer/global.d.ts` | TypeScript types for window API |
+
+## Discord integration
+
+The Discord overlay integration is handled entirely within the Electron main process:
+
+<Accordion title="Discord OAuth flow">
+  From `docs/architecture.md:45`:
+  
+  - **OAuth/PKCE + token storage**: `electron/main/discord/oauth.js`
+  - **Relay (WebSocket) connection**: `electron/main/discord/relay.js`  
+  - **IPC surface**: `electron/main/ipc/discord.js` + `electron/preload.js`
+  - **Events**: `discord-relay-status`, `discord-auth-required`
+</Accordion>
+
+The relay forwards `/ask` commands from Discord to the local backend and sends responses back through the Discord bot.
+
+## Backend spawning
+
+Electron main is responsible for spawning and monitoring the Python backend process:
+
+<Steps>
+  <Step title="Generate auth token">
+    Generate `STELLARIS_API_TOKEN` if not already set
+  </Step>
+  <Step title="Determine backend path">
+    Choose between PyInstaller bundle or development Python module
+  </Step>
+  <Step title="Set environment variables">
+    Pass `GOOGLE_API_KEY`, `STELLARIS_API_TOKEN`, `STELLARIS_DB_PATH`, etc.
+  </Step>
+  <Step title="Spawn subprocess">
+    Start backend on `127.0.0.1:8742` (default port)
+  </Step>
+  <Step title="Health check">
+    Poll `/api/health` until backend is ready
+  </Step>
+  <Step title="Monitor lifecycle">
+    Watch for backend crashes and handle cleanup on app exit
+  </Step>
+</Steps>
+
+## HTTP proxy layer
+
+The Electron main process acts as a proxy between the renderer and the backend:
+
+```mermaid
+graph LR
+    A[Renderer] -->|IPC| B[Main Process]
+    B -->|HTTP + Token| C[Python Backend]
+    C -->|JSON| B
+    B -->|IPC Envelope| A
+```
+
+This architecture provides several benefits:
+
+<AccordionGroup>
+  <Accordion title="Security isolation">
+    Renderer never sees the backend auth token
+  </Accordion>
+  <Accordion title="Consistent error handling">
+    All backend errors are transformed into the standard IPC envelope
+  </Accordion>
+  <Accordion title="Request timeout handling">
+    Main process can enforce timeouts on backend requests
+  </Accordion>
+  <Accordion title="Graceful degradation">
+    Main can detect backend crashes and surface appropriate errors to UI
+  </Accordion>
+</AccordionGroup>
+
+## Development workflow integration
+
+The `dev.sh` script orchestrates the development environment:
+
+```bash dev.sh:54
+# Start Python backend in background
+if [ -f "venv/bin/python3" ]; then
+  venv/bin/python3 -m backend.electron_main &
+else
+  python3 -m backend.electron_main &
+fi
+PYTHON_PID=$!
+
+# Wait for backend to be ready
+for i in {1..30}; do
+  if curl -s -H "Authorization: Bearer $STELLARIS_API_TOKEN" \
+     http://127.0.0.1:8742/api/health > /dev/null 2>&1; then
+    echo "✅ Backend ready!"
+    break
+  fi
+  sleep 1
+done
+
+# Start Electron
+cd electron
+STELLARIS_API_TOKEN="$STELLARIS_API_TOKEN" npm run dev
+```
+
+## Process communication patterns
+
+### Synchronous request/response
+
+Most IPC calls follow a synchronous request/response pattern:
+
+```typescript
+const response = await window.electronAPI.backend.chat({
+  message: "What should I do next?",
+  saveId: currentSaveId,
+})
+
+if (response.ok) {
+  console.log(response.data.message)
+} else {
+  console.error(response.error)
+}
+```
+
+### Push events
+
+Some subsystems use push events for state changes:
+
+- `backend-status` - Backend process state (starting, ready, crashed)
+- `discord-relay-status` - WebSocket relay connection state
+- `discord-auth-required` - OAuth flow needs user interaction
+- `announcements-updated` - New announcements available
+- `update-available` - App update ready to download
+
+### Streaming responses
+
+For long-running operations like chronicle generation, the backend can stream progress updates:
+
+```typescript
+window.electronAPI.backend.generateChronicle({ saveId })
+
+// Listen for progress events
+window.electronAPI.on('chronicle-progress', (event, { stage, progress }) => {
+  updateProgressBar(progress)
+})
+```
+
+## Testing architecture
+
+The architecture supports independent testing of each layer:
+
+- **Backend tests**: pytest against FastAPI routes
+- **Main process**: Mock backend HTTP responses
+- **Renderer**: Mock IPC calls via test doubles
+
+See the [Development](/advanced/development) guide for testing workflows.

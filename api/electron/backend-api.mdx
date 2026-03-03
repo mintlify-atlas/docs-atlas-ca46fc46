@@ -1,0 +1,472 @@
+---
+title: "Backend API"
+description: "IPC API for communicating with the Python backend server through Electron's main process"
+---
+
+The Backend API provides a secure bridge between the Electron renderer process and the Python FastAPI backend. All requests are proxied through the main process, which automatically adds authentication headers.
+
+## Overview
+
+Access the Backend API through `window.electronAPI.backend` in the renderer process. The main process validates all IPC calls and proxies requests to the local backend server with proper authentication.
+
+## Authentication
+
+All backend endpoints require Bearer token authentication. The auth token is managed by the main process and never exposed to the renderer. The token is read from the `STELLARIS_API_TOKEN` environment variable.
+
+## Health & Diagnostics
+
+### health()
+
+Check backend server health and current game state.
+
+<ParamField body="none" type="void">
+  This method takes no parameters.
+</ParamField>
+
+<ResponseField name="status" type="string" required>
+  Server status, typically "ok"
+</ResponseField>
+
+<ResponseField name="save_loaded" type="boolean" required>
+  Whether a save file is currently loaded
+</ResponseField>
+
+<ResponseField name="empire_name" type="string">
+  Name of the player's empire (if save loaded)
+</ResponseField>
+
+<ResponseField name="game_date" type="string">
+  Current in-game date in YYYY.MM.DD format
+</ResponseField>
+
+<ResponseField name="precompute_ready" type="boolean" required>
+  Whether the briefing precompute is ready for chat
+</ResponseField>
+
+```javascript
+const health = await window.electronAPI.backend.health()
+console.log('Backend status:', health.status)
+if (health.save_loaded) {
+  console.log(`Empire: ${health.empire_name} (${health.game_date})`)
+}
+```
+
+### diagnostics()
+
+Get comprehensive diagnostic information for bug reports.
+
+<ParamField body="none" type="void">
+  This method takes no parameters.
+</ParamField>
+
+<ResponseField name="stellarisVersion" type="string">
+  Stellaris game version
+</ResponseField>
+
+<ResponseField name="dlcs" type="array">
+  List of required DLC identifiers
+</ResponseField>
+
+<ResponseField name="empireType" type="string">
+  Empire authority type (e.g., "democratic", "imperial")
+</ResponseField>
+
+<ResponseField name="empireName" type="string">
+  Name of the player's empire
+</ResponseField>
+
+<ResponseField name="empireEthics" type="array">
+  List of empire ethics
+</ResponseField>
+
+<ResponseField name="empireCivics" type="array">
+  List of empire civics
+</ResponseField>
+
+<ResponseField name="empireOrigin" type="string">
+  Empire origin
+</ResponseField>
+
+<ResponseField name="gameYear" type="string">
+  Current game date
+</ResponseField>
+
+<ResponseField name="saveFileSizeMb" type="number">
+  Save file size in megabytes
+</ResponseField>
+
+<ResponseField name="galaxySize" type="number">
+  Galaxy size
+</ResponseField>
+
+<ResponseField name="precomputeReady" type="boolean">
+  Whether precompute is ready
+</ResponseField>
+
+```javascript
+const diagnostics = await window.electronAPI.backend.diagnostics()
+console.log('Stellaris version:', diagnostics.stellarisVersion)
+console.log('DLCs:', diagnostics.dlcs)
+```
+
+## Chat & Session Advisor
+
+### chat(message, sessionKey)
+
+Ask the Session Advisor a question about the current game state.
+
+<ParamField body="message" type="string" required>
+  The question or message to send to the advisor
+</ParamField>
+
+<ParamField body="sessionKey" type="string" default="default">
+  Session key to maintain conversation context. Automatically scoped to the current save.
+</ParamField>
+
+<ResponseField name="text" type="string" required>
+  The advisor's response text
+</ResponseField>
+
+<ResponseField name="game_date" type="string">
+  Game date the response is based on
+</ResponseField>
+
+<ResponseField name="response_time_ms" type="number">
+  Response time in milliseconds
+</ResponseField>
+
+```javascript
+const response = await window.electronAPI.backend.chat(
+  'What should I focus on right now?',
+  'default'
+)
+console.log('Advisor says:', response.text)
+```
+
+<Warning>
+  Returns 503 error if no save is loaded or precompute is not ready yet. Check `health()` first.
+</Warning>
+
+### getSessionAdvisorCustom()
+
+Get custom instructions for the Session Advisor personality.
+
+<ResponseField name="custom_instructions" type="string | null" required>
+  Current custom instructions text (max 300 characters)
+</ResponseField>
+
+<ResponseField name="persisted" type="boolean" required>
+  Whether the instructions are persisted to the database
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.backend.getSessionAdvisorCustom()
+if (result.custom_instructions) {
+  console.log('Custom personality:', result.custom_instructions)
+}
+```
+
+### setSessionAdvisorCustom(customInstructions)
+
+Set custom instructions for the Session Advisor personality.
+
+<ParamField body="customInstructions" type="string" required>
+  Custom instructions to modify the advisor's personality (max 300 characters)
+</ParamField>
+
+<ResponseField name="custom_instructions" type="string | null" required>
+  The stored custom instructions (truncated to 300 chars)
+</ResponseField>
+
+<ResponseField name="persisted" type="boolean" required>
+  Whether the instructions were persisted to the database
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.backend.setSessionAdvisorCustom(
+  'Speak like a space pirate captain'
+)
+console.log('Personality updated:', result.persisted)
+```
+
+## Game Status
+
+### status()
+
+Get empire status summary with key metrics.
+
+<ResponseField name="empire_name" type="string" required>
+  Empire name
+</ResponseField>
+
+<ResponseField name="game_date" type="string" required>
+  Current game date
+</ResponseField>
+
+<ResponseField name="military_power" type="number" required>
+  Total military power rating
+</ResponseField>
+
+<ResponseField name="economy" type="object" required>
+  Economic metrics including energy, minerals, alloys, food, consumer_goods, tech_power, and economy_power
+</ResponseField>
+
+<ResponseField name="colonies" type="number" required>
+  Number of colonies
+</ResponseField>
+
+<ResponseField name="pops" type="number" required>
+  Total population count
+</ResponseField>
+
+<ResponseField name="active_wars" type="array" required>
+  List of active wars with name, attackers, and defenders
+</ResponseField>
+
+```javascript
+const status = await window.electronAPI.backend.status()
+console.log(`${status.empire_name} - ${status.game_date}`)
+console.log(`Military: ${status.military_power}, Colonies: ${status.colonies}`)
+console.log('Active wars:', status.active_wars.length)
+```
+
+## Session History
+
+### sessions()
+
+Get list of all play sessions.
+
+<ResponseField name="sessions" type="array" required>
+  List of session objects with id, save_id, empire_name, started_at, ended_at, first_game_date, last_game_date, snapshot_count, and is_active
+</ResponseField>
+
+```javascript
+const { sessions } = await window.electronAPI.backend.sessions()
+sessions.forEach(session => {
+  console.log(`${session.empire_name}: ${session.first_game_date} - ${session.last_game_date}`)
+  console.log(`  ${session.snapshot_count} snapshots, active: ${session.is_active}`)
+})
+```
+
+### sessionEvents(sessionId, limit)
+
+Get events for a specific session.
+
+<ParamField body="sessionId" type="string" required>
+  Session ID to fetch events for
+</ParamField>
+
+<ParamField body="limit" type="number" default="50">
+  Maximum number of events to return
+</ParamField>
+
+<ResponseField name="events" type="array" required>
+  List of event objects with id, game_date, event_type, summary, and data
+</ResponseField>
+
+```javascript
+const { events } = await window.electronAPI.backend.sessionEvents(
+  'session_123',
+  50
+)
+events.forEach(event => {
+  console.log(`[${event.game_date}] ${event.event_type}: ${event.summary}`)
+})
+```
+
+### endSession()
+
+End the current active session.
+
+<ResponseField name="session_id" type="string" required>
+  ID of the ended session
+</ResponseField>
+
+<ResponseField name="ended_at" type="number" required>
+  Unix timestamp when session was ended
+</ResponseField>
+
+<ResponseField name="snapshot_count" type="number" required>
+  Number of snapshots captured during the session
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.backend.endSession()
+console.log(`Session ${result.session_id} ended with ${result.snapshot_count} snapshots`)
+```
+
+## Recap & Chronicle
+
+### recap(sessionId, style)
+
+Generate a recap summary for a session.
+
+<ParamField body="sessionId" type="string" required>
+  Session ID to generate recap for
+</ParamField>
+
+<ParamField body="style" type="string" default="summary">
+  Recap style: "summary" (fast, deterministic) or "dramatic" (LLM-powered narrative)
+</ParamField>
+
+<ResponseField name="text" type="string" required>
+  The generated recap text
+</ResponseField>
+
+<ResponseField name="date_range" type="string" required>
+  Date range of the session
+</ResponseField>
+
+```javascript
+const recap = await window.electronAPI.backend.recap(
+  'session_123',
+  'dramatic'
+)
+console.log('Recap:', recap.text)
+console.log('Period:', recap.date_range)
+```
+
+### chronicle(sessionId, forceRefresh, chapterOnly)
+
+Generate a full chronicle narrative for a session.
+
+<ParamField body="sessionId" type="string" required>
+  Session ID to generate chronicle for
+</ParamField>
+
+<ParamField body="forceRefresh" type="boolean" default="false">
+  Force regeneration even if cached chronicle exists
+</ParamField>
+
+<ParamField body="chapterOnly" type="boolean" default="false">
+  Only generate the latest chapter instead of full chronicle
+</ParamField>
+
+<ResponseField name="text" type="string" required>
+  The generated chronicle text (HTML)
+</ResponseField>
+
+<ResponseField name="chapters" type="array">
+  List of chronicle chapters
+</ResponseField>
+
+```javascript
+const chronicle = await window.electronAPI.backend.chronicle(
+  'session_123',
+  false,
+  false
+)
+console.log('Chronicle generated:', chronicle.chapters.length, 'chapters')
+```
+
+<Warning>
+  Returns 409 error if chronicle generation is already in progress. Wait 2 seconds and retry.
+</Warning>
+
+### regenerateChapter(sessionId, chapterNumber, confirm, regenerationInstructions)
+
+Regenerate a specific finalized chapter.
+
+<ParamField body="sessionId" type="string" required>
+  Session ID
+</ParamField>
+
+<ParamField body="chapterNumber" type="number" required>
+  Chapter number to regenerate
+</ParamField>
+
+<ParamField body="confirm" type="boolean" default="false">
+  Must be true to proceed with regeneration
+</ParamField>
+
+<ParamField body="regenerationInstructions" type="string | null" default="null">
+  Optional instructions to guide the regeneration
+</ParamField>
+
+<ResponseField name="chapter" type="object" required>
+  The regenerated chapter object
+</ResponseField>
+
+<ResponseField name="stale_chapters" type="array" required>
+  List of downstream chapter numbers marked as stale
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.backend.regenerateChapter(
+  'session_123',
+  5,
+  true,
+  'Focus more on diplomatic events'
+)
+console.log('Chapter regenerated, stale chapters:', result.stale_chapters)
+```
+
+### getChronicleCustom()
+
+Get custom instructions for chronicle generation.
+
+<ResponseField name="custom_instructions" type="string | null" required>
+  Current custom instructions (max 500 characters)
+</ResponseField>
+
+<ResponseField name="persisted" type="boolean" required>
+  Whether instructions are persisted
+</ResponseField>
+
+### setChronicleCustom(customInstructions)
+
+Set custom instructions for chronicle generation.
+
+<ParamField body="customInstructions" type="string" required>
+  Custom instructions for chronicle style (max 500 characters)
+</ParamField>
+
+<ResponseField name="custom_instructions" type="string | null" required>
+  The stored instructions (truncated to 500 chars)
+</ResponseField>
+
+<ResponseField name="persisted" type="boolean" required>
+  Whether instructions were persisted
+</ResponseField>
+
+```javascript
+const result = await window.electronAPI.backend.setChronicleCustom(
+  'Write in the style of a galactic historian'
+)
+console.log('Chronicle style updated:', result.persisted)
+```
+
+## Backend Status Events
+
+### onBackendStatus(callback)
+
+Listen for backend status updates from health checks.
+
+<ParamField body="callback" type="function" required>
+  Callback function that receives status updates
+</ParamField>
+
+**Returns:** Cleanup function to unregister the callback.
+
+```javascript
+const cleanup = window.electronAPI.onBackendStatus((status) => {
+  console.log('Backend status:', status)
+  if (status.save_loaded) {
+    console.log(`Loaded: ${status.empire_name} (${status.game_date})`)
+  }
+})
+
+// Later, to stop listening:
+cleanup()
+```
+
+<Note>
+  The preload script uses a managed listener system to prevent memory leaks. Always call the returned cleanup function when done listening.
+</Note>
+
+## Source Code References
+
+- **Preload bridge**: `electron/preload.js:44-99` (lines 44-99)
+- **IPC handlers**: `electron/main/ipc/backend.js:1-107`
+- **Backend server**: `backend/api/server.py:1-955`
+- **FastAPI app**: `backend/api/server.py:157-954` (create_app function)

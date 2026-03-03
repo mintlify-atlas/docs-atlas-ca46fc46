@@ -1,0 +1,208 @@
+---
+title: Introduction to Stellaris Companion
+description: Your empire's strategic council, on demand. Get actionable strategic advice powered by AI for your Stellaris campaigns.
+---
+
+# Your empire's strategic council, on demand
+
+Stellaris Companion reads your save, tracks what is changing across time, and gives actionable strategic advice in your empire's voice. It uses Gemini 3 Flash and a Rust parser for fast extraction.
+
+<Note>
+**Privacy-first architecture**: Your save files stay on your machine. Local processing by default. Only your question and extracted game context are sent to Gemini using your own API key.
+</Note>
+
+## Why use Stellaris Companion
+
+<CardGroup cols={2}>
+  <Card title="Actionable strategy" icon="chess" href="#strategic-analysis">
+    Military, economy, diplomacy, leaders, planets, tech, and more. Not generic tips.
+  </Card>
+  
+  <Card title="Chronicle mode" icon="book" href="#chronicle-your-campaigns">
+    Turn your campaign into a narrative history with chaptered events.
+  </Card>
+  
+  <Card title="In-game workflow" icon="gamepad" href="#discord-overlay">
+    Ask questions through Discord overlay with `/ask` while you play.
+  </Card>
+  
+  <Card title="Privacy-first" icon="shield" href="#privacy">
+    Saves stay local. You bring your own API key.
+  </Card>
+</CardGroup>
+
+## Strategic analysis
+
+Get deep insights tailored to your empire's current situation:
+
+- "Give me a strategic briefing"
+- "Who should I be worried about right now?"
+- "What is hurting my economy?"
+- "Should I push alloys or research this decade?"
+- "How strong is my military compared to neighbors?"
+- "Which tech path gives me the biggest edge next?"
+
+The companion uses a **precomputed complete briefing** that includes military, economy, diplomacy, leaders, planets, starbases, and technology data. No tool-calling loop means fast responses.
+
+### Dynamic personality
+
+Advisor tone adapts to your empire's ethics, government, and civics. A militaristic dictatorship gets different advice than a pacifist democracy.
+
+## Chronicle your campaigns
+
+<Steps>
+  <Step title="Play normally">
+    Stellaris Companion watches your save folder and automatically detects new saves.
+  </Step>
+  
+  <Step title="Track history">
+    SQLite snapshots detect changes between saves, building a complete timeline.
+  </Step>
+  
+  <Step title="Generate chronicles">
+    AI-generated chaptered narrative from your campaign history. Turn gameplay into storytelling.
+  </Step>
+</Steps>
+
+## Discord overlay
+
+Ask questions without alt-tabbing:
+
+```text
+/ask Should I attack the fallen empire?
+/ask What's my economy looking like?
+/ask Who should I be worried about?
+```
+
+<Warning>
+The Electron app must be running for Discord commands to work. The relay forwards `/ask` requests between Discord and your local app.
+</Warning>
+
+## Core features
+
+| Feature | Description |
+|---------|-------------|
+| **Fast chat** | Uses precomputed complete briefing JSON (no tool-calling loop) |
+| **Deep extraction** | Military, economy, diplomacy, leaders, planets, starbases, technology |
+| **Dynamic personality** | Advisor tone adapts to ethics, government, and civics |
+| **History tracking** | SQLite snapshots detect change between saves |
+| **Chronicle** | AI-generated chaptered narrative from your campaign history |
+| **Auto save detection** | Finds your newest save automatically |
+| **Discord integration** | Ask `/ask` in-game through Discord overlay |
+
+## Privacy
+
+<CardGroup cols={2}>
+  <Card title="Local processing" icon="laptop">
+    Parsing, extraction, and history storage happen on your machine.
+  </Card>
+  
+  <Card title="Your API key" icon="key">
+    You bring your own Gemini API key. No third-party intermediaries.
+  </Card>
+  
+  <Card title="Saves stay local" icon="lock">
+    Your `.sav` files never leave your machine.
+  </Card>
+  
+  <Card title="Minimal data sent" icon="shield-check">
+    Only your question + extracted game context go to Gemini.
+  </Card>
+</CardGroup>
+
+### What leaves your machine
+
+- Your question text
+- Extracted game context (numbers, empire names, resource values)
+- Sent to Gemini using **your own API key**
+
+### What stays local
+
+- All `.sav` files
+- Full game state data
+- History database (SQLite)
+- Chronicle cache
+
+<Note>
+**Discord relay scope**: The relay only forwards `/ask` requests and responses between Discord and your local app. It does not store or log game data.
+</Note>
+
+## How it works
+
+```text
+User Question
+     |
+     v
+Gemini 3 Flash + empire-specific personality
+     |
+     v
+Complete Briefing JSON (precomputed + cached)
+     |
+     v
+Strategic response
+```
+
+### Architecture
+
+- **Electron app**: Primary UI for chat, chronicle, history, settings
+- **Python backend**: FastAPI server handling save extraction and LLM calls
+- **Rust parser**: Fast Clausewitz format parser built on [jomini](https://crates.io/crates/jomini)
+- **Discord relay**: Optional Cloudflare Worker for in-game `/ask` commands
+
+## Save file locations
+
+Auto-detected defaults:
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    ~/Documents/Paradox Interactive/Stellaris/save games/
+    ```
+  </Tab>
+  
+  <Tab title="Linux (Steam)">
+    ```bash
+    ~/.local/share/Paradox Interactive/Stellaris/save games/
+    ```
+  </Tab>
+  
+  <Tab title="Linux (Flatpak)">
+    ```bash
+    ~/.var/app/com.valvesoftware.Steam/.local/share/Paradox Interactive/Stellaris/save games/
+    ```
+  </Tab>
+  
+  <Tab title="Windows">
+    ```bash
+    Documents\Paradox Interactive\Stellaris\save games\
+    ```
+  </Tab>
+</Tabs>
+
+You can always override the folder in **Config** → **DATA INGESTION** → **BROWSE**.
+
+<Note>
+**GeForce Now / cloud gaming**: Download your `.sav` from Steam Remote Storage and point the config to that folder.
+</Note>
+
+## Perspective and spoilers
+
+Currently, the companion runs in **Strategic Perspective**. Most outputs are player-centric (your empire, your economy, your wars, and your known contacts), but some systems use galaxy-wide signals for stronger analysis.
+
+<Warning>
+This can occasionally surface information earlier than normal in-game discovery.
+</Warning>
+
+A stricter **Immersive Perspective** with fog-of-war-aware filtering is planned as a future exploration area.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Get Python, Rust, and Node.js dependencies set up.
+  </Card>
+  
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Go from installation to your first strategic briefing.
+  </Card>
+</CardGroup>
