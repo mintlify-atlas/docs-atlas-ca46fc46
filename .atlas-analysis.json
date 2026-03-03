@@ -1,0 +1,106 @@
+{
+  "projectType": "saas",
+  "projectName": "Stellaris Companion",
+  "projectDescription": "AI-powered strategic advisor and empire chronicler for Stellaris using Gemini",
+  "theme": "aspen",
+  "primaryColor": "#4A90E2",
+  "lightColor": "#7B68EE",
+  "darkColor": "#1E3A5F",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/strategic-advisor",
+              "features/chronicle-mode",
+              "features/discord-integration",
+              "features/save-management"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/rust-parser",
+              "advanced/architecture",
+              "advanced/development",
+              "advanced/privacy"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/guide",
+              "contributing/changelog"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Python API",
+            "pages": [
+              "api/python/core",
+              "api/python/extractors",
+              "api/python/database"
+            ]
+          },
+          {
+            "group": "Electron IPC",
+            "pages": [
+              "api/electron/backend-api",
+              "api/electron/discord-api"
+            ]
+          },
+          {
+            "group": "Rust Parser",
+            "pages": [
+              "api/rust/cli-reference",
+              "api/rust/integration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered strategic briefings using Gemini",
+    "Chronicle mode for narrative campaign history",
+    "Discord overlay integration with /ask command",
+    "Fast Rust-based save file parser",
+    "Local-first privacy architecture",
+    "Multi-platform desktop app (Electron)",
+    "Deep game state extraction (military, economy, diplomacy, leaders, planets)",
+    "Dynamic personality based on empire ethics and government"
+  ],
+  "publicApiSurface": [
+    "/api/chat - Chat with strategic advisor",
+    "/api/recap - Generate session recap",
+    "/api/chronicle - Generate chronicle chapters",
+    "/api/sessions - List game sessions",
+    "/api/config - Get/set configuration",
+    "/api/discord/connect - Discord OAuth flow",
+    "stellaris-parser extract-save - Extract save data",
+    "stellaris-parser iter-save - Iterate save sections",
+    "window.electronAPI.backend.chat()",
+    "window.electronAPI.backend.loadSessions()",
+    "window.electronAPI.discord.connect()",
+    "backend.core.companion.Companion",
+    "backend.core.chronicle.ChronicleGenerator",
+    "backend.core.database.Database",
+    "stellaris_save_extractor.base.BaseExtractor",
+    "stellaris_companion.rust_bridge.RustParser"
+  ]
+}
